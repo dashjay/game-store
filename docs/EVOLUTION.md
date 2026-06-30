@@ -191,6 +191,22 @@
 - **后续方向：** 同步更新存储引擎（双层引擎/CRDT）、分片路由、部署/备份/指标/路线图。
 - **关联：** MR-0007；上述两份文档。
 
+### MR-0009 · 同步存储引擎与分片路由到无主多写模型
+- **日期：** 2026-06-30
+- **类型：** AI
+- **动机：** 让存储引擎与分片/路由文档与无主多写路线自洽。
+- **关键决策：**
+  - [`design/03-storage-engine.md`](design/03-storage-engine.md)：引入 Replica 三层结构与 **双层引擎**
+    （数据暂存层 Conflict Resolver + 可插拔通用引擎 RocksDB/LSH）；区分 **HLC 时间戳**（跨副本冲突/排序）与
+    **结构 version**（整 Key 逻辑删除/子键 GC）；以 **WAL（每 Core 共享）+ Operation 日志 + Checkpoint** 取代原 Raft 日志引擎；
+    重写"一次写入在 Replica 内的路径"为 Coordinator→WAL→暂存层合并→通用引擎。
+  - [`design/05-sharding-routing.md`](design/05-sharding-routing.md)：分片模型改为 Namespace/Table/Partition/Replica（无主）；
+    路由以 MetaServer 元信息为准（Redis Cluster 槽位作为 Proxy 层可选兼容）；扩缩容用 Replica 重建 + Anti-Entropy 追平（无成员投票/转主）；
+    多租户多维负载均衡与 NRC/Quota/WFQ；多地域 Main Replicator 就近访问。
+- **影响范围：** 更新 `design/03-storage-engine.md`、`design/05-sharding-routing.md`。
+- **后续方向：** 收尾更新部署 CRD、备份、可观测性指标、路线图。
+- **关联：** MR-0007/0008；上述两份文档。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---

@@ -1,30 +1,60 @@
 # 03 · 存储引擎与 Redis 数据编码
 
-> 本文件说明 GameStore 如何在 **RocksDB（LSM-Tree）** 之上实现 Redis 数据类型，
-> 以及为高频写场景所做的引擎选型与调优方向。
+> 本文件说明 GameStore 在单个 Replica 内的 **三层结构** 与 **双层引擎**，
+> 如何用 **HLC 版本 + 暂存层冲突合并 + 可插拔通用引擎** 支撑无主多写，
+> 以及在通用引擎（RocksDB）上如何编码 Redis 数据类型。
+>
+> **路线说明：** 本文件在 MR-0007/0008 由"单层 RocksDB + Raft 日志引擎"调整为 Abase 式 **双层引擎**，
+> 详见 [`../EVOLUTION.md`](../EVOLUTION.md) 与 [`04-replication-consistency.md`](04-replication-consistency.md)。
 
-## 1. 为什么是 RocksDB / LSM-Tree
+## 0. Replica 三层结构与双层引擎（总览）
+
+每个 Replica 内为三层（对齐 Abase2）：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 数据模型层   String / Hash / Set / ZSet / List 的 Redis 接口 │
+├─────────────────────────────────────────────────────────┤
+│ 一致性协议层 Anti-Entropy 冲突合并 + 下刷协调 + WAL GC       │
+├─────────────────────────────────────────────────────────┤
+│ 数据引擎层（双层）                                          │
+│   ① 数据暂存层(Conflict Resolver)：多版本(按 HLC)冲突合并    │
+│      —— SkipList / RocksDB memtable，常驻内存、小时间窗      │
+│   ② 通用引擎层(可插拔)：仅存合并后的单版本最终值             │
+│      —— LSM(RocksDB/TerarkDB) 或 LSH(点查延迟更稳)          │
+└─────────────────────────────────────────────────────────┘
+            ▲ 持久化：每 Core 一个共享 WAL（先写 WAL 再入暂存层）
+```
+
+**为什么是双层引擎？** 多写下同一 Key 会有多个带 HLC 的版本，但正常网络下 **秒级即可确定最终有效值**。
+若把所有版本直接写入 RocksDB，会导致：查询要 `seek` 多版本（比 `get` 慢）、需后台扫描回收无效版本（耗 CPU/IO）、
+引擎层与多版本耦合而无法插件化。因此把"多版本冲突解决"收敛到 **内存暂存层**，**只把最终单版本落到通用引擎层**——
+查询走点查、引擎层可按业务插拔（见 §6）。
+
+## 1. 通用引擎层：为什么默认 RocksDB / LSM-Tree
 
 - **写优化。** LSM 把随机写转化为内存 MemTable 追加 + 顺序刷盘，天然适配"高频小写入"。
-- **覆盖友好。** 同一 Key 的高频更新在 LSM 中表现为多版本追加，读取取最新、Compaction 合并旧版本，
-  无需原地更新，避免读改写放大。
+- **覆盖友好。** 同一 Key 的高频更新在 LSM 中表现为多版本追加，读取取最新、Compaction 合并旧版本。
 - **成本友好。** 数据主体在 SSD，内存只承担 MemTable 与 Block Cache，单位容量成本远低于全内存。
-- **成熟可靠。** RocksDB 经大规模生产验证，参数丰富，便于按负载调优；TiKV/Kvrocks 均以其为基。
-
-代价是 **写放大与 Compaction 开销**，这正是后文调优与"写合并"策略要控制的重点。
+- **可插拔。** 通用引擎层抽象了接口：有顺序需求用 **RocksDB/TerarkDB（LSM）**；
+  纯点查、要求延迟更稳定用 **LSH 引擎**。大 Value 还可走 KV 分离（见 §5）。
 
 ## 2. 编码总原则：元数据键 + 子键 + 版本号
 
-Redis 的复合类型（Hash/Set/ZSet/List）不能直接塞进扁平 KV，需要编码。GameStore 采用与
-Kvrocks/TiKV-Redis 类似的 **"元数据键 + 子键 + 版本号"** 方案：
+这里指 **通用引擎层** 上的编码（即冲突已被暂存层合并后的最终单版本数据）。
+Redis 的复合类型（Hash/Set/ZSet/List）不能直接塞进扁平 KV，GameStore 采用与
+Kvrocks 类似的 **"元数据键 + 子键 + 版本号"** 方案：
 
-- 每个用户可见 Key 有一条 **元数据（metadata）记录**，存类型、版本号 `version`、过期时间 `expire`、
+- 每个用户可见 Key 有一条 **元数据（metadata）记录**，存类型、版本号 `version`（结构版本）、过期时间 `expire`、
   以及类型相关的统计（如 Hash 的字段数）。
 - 复合类型的每个成员是一条 **子键（subkey）记录**，键里嵌入所属 Key 与其 **当前 version**。
 - 删除/重建 Key 时只需 **递增 version**（O(1) 逻辑删除），旧 version 的子键由
   **Compaction Filter** 在后台物理回收，无需同步扫描删除海量子键。
 
-所有 Key 还会带上 **分片前缀**（用于同机多分片在共享 RocksDB 中的隔离，见 §6）。下文为简洁省略该前缀。
+> 区分两类"版本"：**HLC 时间戳** 用于 **跨副本冲突解决/全排序**（暂存层、Operation 日志，见 [`04-replication-consistency.md`](04-replication-consistency.md)）；
+> 这里的 **结构 version** 用于通用引擎层的 **整 Key 逻辑删除与子键 GC**。二者职责不同。
+
+所有 Key 还会带上 **Partition 前缀**（用于同一 Core 内多 Replica 在引擎中的隔离）。下文为简洁省略该前缀。
 
 ### 2.1 String
 
@@ -75,43 +105,52 @@ subkey  = enc(key) | version | field   → value
 
 > 具体数值需结合 [`01-workload-data-model.md`](01-workload-data-model.md) 与压测确定，这里给方向。
 
-- **MemTable：** 适当增大单个 MemTable 与最大 MemTable 数，吸收写峰值、减少刷盘频率。
-- **WAL 与组提交：** 开启 group commit，把多笔写的 WAL 落盘合并，降低 fsync 次数（与 Raft batch 协同）。
-- **Compaction：** 评估 Level vs Universal Compaction 在本负载下的写放大/空间放大权衡；
-  对高频覆盖的 Hash 子键，Compaction 能高效合并同 Key 多版本。
+- **MemTable / 暂存层：** 暂存层本身常用 RocksDB memtable/SkipList；通用引擎适当增大 MemTable 吸收写峰值。
 - **限速（Rate Limiter）：** 给 Compaction/Flush 限速，避免 I/O 抢占前台写、平滑长尾延迟。
-- **Block Cache：** 内存主要用于 Block Cache 命中热数据（在线玩家），冷数据留在 SSD。
+- **Block Cache + 最终值 Cache：** 热数据（在线玩家）命中内存；CRDT 最终值缓存在内存 Cache，使查询不必合并 Operation 日志。
 - **Bloom Filter：** 为点查（`HGET`）开启，减少无效 SST 访问。
-- **KV 分离（可选）：** 若实测大 Value（如整玩家快照 JSON）占比高，评估 BlobDB 以降低 Compaction 搬运成本；
-  小值为主时不必启用（属 [`EVOLUTION.md`](../EVOLUTION.md) 待决问题）。
+- **KV 分离（可选）：** 大 Value（整玩家快照 JSON）占比高时启用 KV 分离降低写放大；
+  **带 TTL 的大 Value 可只写 Log 等其失效、不进通用引擎**（Abase 实践），小值为主时不必启用。
 
-## 6. 数据引擎与 Raft 日志引擎分离
+## 6. WAL、Operation 日志与 Checkpoint
 
-写入路径上有两类持久化：**Raft 日志**（顺序追加、提交后可截断）与 **KV 数据**（状态机应用结果）。
-二者混在同一个 RocksDB 会相互干扰（日志的高频追加扰动数据的 Compaction）。因此：
+无主多写下，单个 Replica 内的持久化与一致性数据流如下（取代原 Raft 日志引擎方案）：
 
-- **KV 数据：** 每节点一个共享 RocksDB 实例，多分片以 **分片前缀** 隔离 Key 空间。
-- **Raft 日志：** 使用 **独立日志引擎**（专用于顺序追加 + 区间截断的轻量引擎，类 TiKV Raft Engine，
-  或独立 RocksDB 实例），与数据引擎分盘/分实例，互不干扰。
+- **WAL（每 Core 共享一个）：** 写入先落 WAL 保证持久化，再进暂存层；一个 Core 内多个 Replica 共享一个 WAL，
+  **合并碎片化提交、减少 IO**。数据下刷通用引擎后，对应 WAL 即可 GC。
+- **Operation 日志 / ReplicaLog：** 用于 CRDT 合并与 Anti-Entropy（见 [`04-replication-consistency.md`](04-replication-consistency.md) §7、§8）。
+  每条带严格递增 Seqno 与 HLC 时间戳；正常情况下只需常驻内存，极端（网络分区）才 dump 到盘。
+- **Checkpoint：** 定期把"已达成一致时间戳之前"的 Operation 合并为单一结果写入通用引擎层，并截断对应日志，
+  防止日志膨胀、并让查询走点查。
 
-这一分离对"高频写"尤为关键：它把"日志落盘"和"数据 Compaction"两条 I/O 流解耦，稳定写延迟。
+## 7. 引擎可插拔
 
-## 7. 一次写入在引擎内的完整路径
+通用引擎层抽象统一接口，按业务选择：
+
+| 引擎 | 特性 | 适用 |
+| --- | --- | --- |
+| RocksDB / TerarkDB（LSM） | 有序、范围扫描、写优化 | 需要顺序/范围（如 ZSet 排行榜）、通用场景 |
+| LSH 引擎 | 纯点查、延迟更稳定 | 无序点查为主、对长尾延迟敏感 |
+
+> 因为多版本冲突已在暂存层解决，通用引擎层只面对"单版本最终值"，因此能保持简单、可替换。
+
+## 8. 一次写入在 Replica 内的完整路径
 
 ```
-Raft committed entry
+Replica Coordinator 收到写（已分配 HLC 时间戳）
         │
         ▼
- 状态机 apply：解码命令（如 HSET）
+ 写入本地 WAL（持久化）—— 与同 Core 其他 Replica 合并提交
+        │  并发 forward 到其余副本（满足 Quorum W 即向客户端返回成功）
+        ▼
+ 提交到数据暂存层（按 HLC 做 LWW / CRDT 冲突合并）
         │
-        ├─ 读/更新元数据记录（type/version/expire/field_count）
-        ├─ 写入/更新子键记录（enc(key)|version|field → value）
+        ▼（达到条件 / Checkpoint）
+ 合并为单版本最终值，编码为「元数据 + 子键」写入通用引擎层
         │
         ▼
- RocksDB WriteBatch（原子写入元数据 + 子键，含数据引擎 WAL）
-        │
-        ▼
- 记录 applied_index（用于重启恢复与 ReadIndex）
+ 对应 WAL / Operation 日志可被 GC；最终值进入内存 Cache 供点查
 ```
 
-元数据与子键的更新打包进 **同一个 WriteBatch 原子提交**，保证状态机应用的原子性与可重放性。
+> 与原 Raft 方案的关键差异：**没有"committed→apply"的单一定序**；写入在副本间可乱序，
+> 最终一致由 **HLC 排序 + 暂存层合并 + Anti-Entropy** 保证。
