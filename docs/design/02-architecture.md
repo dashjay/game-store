@@ -1,110 +1,123 @@
 # 02 · 系统架构与组件
 
 > 本文件描述 GameStore 的分层架构、各组件职责、以及一次读写在系统中的完整流转。
+> 架构对齐字节跳动 Abase2（用户面 / 管控面 / 数据面 三视角，五组核心模块）。
+>
+> **路线说明：** 本文件在 MR-0007 由"Proxy + Storage Node(Raft) + PD"重写为 Abase 式组件，详见 [`../EVOLUTION.md`](../EVOLUTION.md)。
 
 ## 1. 架构总览
 
 ```
-                    ┌──────────────────────────────────────────────┐
-                    │                  业务客户端                    │
-                    │  （现有 Redis 客户端 / 可选 GameStore 智能 SDK）│
-                    └───────────────┬──────────────────────────────┘
-                                    │  RESP（Redis 协议）
-                                    ▼
-                    ┌──────────────────────────────────────────────┐
-                    │                 Proxy（无状态接入层）           │
-                    │  RESP 解析 · 槽位路由 · 连接复用 · 热点缓解      │
-                    └───────────────┬──────────────────────────────┘
-                                    │  内部 RPC（gRPC）
-            ┌───────────────────────┼───────────────────────┐
-            ▼                       ▼                       ▼
-   ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-   │  Storage Node A │    │  Storage Node B │    │  Storage Node C │
-   │  ┌───────────┐  │    │  ┌───────────┐  │    │  ┌───────────┐  │
-   │  │ Raft 副本 │  │    │  │ Raft 副本 │  │    │  │ Raft 副本 │  │
-   │  │ (多分片)  │  │    │  │ (多分片)  │  │    │  │ (多分片)  │  │
-   │  └─────┬─────┘  │    │  └─────┬─────┘  │    │  └─────┬─────┘  │
-   │  ┌─────▼─────┐  │    │  ┌─────▼─────┐  │    │  ┌─────▼─────┐  │
-   │  │  RocksDB  │  │    │  │  RocksDB  │  │    │  │  RocksDB  │  │
-   │  │ + RaftLog │  │    │  │ + RaftLog │  │    │  │ + RaftLog │  │
-   │  └───────────┘  │    │  └───────────┘  │    │  └───────────┘  │
-   └─────────────────┘    └─────────────────┘    └─────────────────┘
-            ▲                       ▲                       ▲
-            └───────────────────────┼───────────────────────┘
-                                    │  心跳 / 调度指令
-                    ┌───────────────▼──────────────────────────────┐
-                    │        Placement Driver（PD，3 节点 Raft）     │
-                    │  集群元数据 · 槽位映射 · 副本调度 · 故障转移     │
-                    └──────────────────────────────────────────────┘
+   用户面                ┌──────────────────────────────────────────────┐
+                         │            业务客户端 / Client                 │
+                         │  现有 Redis 客户端 / 重型 SDK（直连，跳过 Proxy）│
+                         └───────────────┬──────────────────────────────┘
+                          RESP2/Thrift   │           ┌──────────────┐
+                                         ▼           │   重型 SDK    │ 直连
+                         ┌───────────────────────┐   └──────┬───────┘
+                         │   Proxy（无状态接入层）  │          │
+                         │ RESP/Thrift·路由·QoS    │          │
+                         └───────────────┬─────────┘          │
+   数据面                                │  内部 RPC           │
+            ┌───────────────────────────┼─────────────────────┘
+            ▼                            ▼                       ▼
+   ┌──────────────────┐       ┌──────────────────┐     ┌──────────────────┐
+   │   DataNode (盘1)  │       │   DataNode (盘2)  │     │   DataNode (盘3)  │
+   │  ┌────Core────┐  │       │  ┌────Core────┐  │     │  ┌────Core────┐  │
+   │  │ Replica ×k │  │       │  │ Replica ×k │  │     │  │ Replica ×k │  │
+   │  │ 共享 1×WAL  │  │       │  │ 共享 1×WAL  │  │     │  │ 共享 1×WAL  │  │
+   │  └─────┬──────┘  │       │  └─────┬──────┘  │     │  └─────┬──────┘  │
+   │  双层引擎(暂存+   │       │  双层引擎(暂存+   │     │  双层引擎(暂存+   │
+   │  通用引擎/盘)     │       │  通用引擎/盘)     │     │  通用引擎/盘)     │
+   └──────────────────┘       └──────────────────┘     └──────────────────┘
+            ▲ 心跳/修复                ▲                          ▲
+            └──────────────┬──────────┴──────────────────────────┘
+   管控面                  ▼
+            ┌──────────────────────────┐      ┌───────────────────────────┐
+            │       MetaServer          │      │        RootServer          │
+            │ 元信息·多租户QoS总控·      │◀────▶│ 全集群视角·跨集群资源/迁移/ │
+            │ 故障检测·数据修复调度       │      │ 容灾·控制爆炸半径           │
+            └──────────────────────────┘      └───────────────────────────┘
+
+      旁路： DTS（Data Transfer Service）—— 迁移 / 备份回滚 / Dump / 订阅
 ```
 
-## 2. 组件职责
+## 2. 逻辑数据模型
 
-### 2.1 Client / SDK
-- **现有 Redis 客户端：** 直接通过 Proxy 接入，业务无需改造。Proxy 对客户端隐藏集群拓扑。
-- **可选智能 SDK：** 内置槽位路由表，可绕过 Proxy 直连分片 Leader，降低一跳延迟（面向对性能敏感、
-  且能感知 Redis Cluster 风格重定向的客户端）。
+`Namespace（库）→ Table（逻辑表）→ Partition（分片）→ Replica（副本）`：
 
-### 2.2 Proxy（无状态接入层）
-- 解析 RESP 协议，按 Key 计算 CRC16 → 槽位 → 目标分片，转发到对应 Leader（或副本）。
-- **无状态、可水平扩展**：任意 Proxy 实例等价，可放在 K8s Deployment + 负载均衡之后。
-- 维护从 PD 同步来的 **路由表缓存**（槽位 → 分片 → 节点），订阅变更增量更新。
-- 提供 **连接复用 / Pipeline 聚合 / 热点 Key 缓解 / 限流 / 慢日志** 等接入层能力。
-- 对客户端屏蔽 `MOVED`/`ASK` 重定向（在迁移期间内部重试到新位置）。
+- **Namespace：** 一个用户/租户的库。
+- **Table：** Namespace 下的逻辑表。
+- **Partition：** Table 被切成的多个不重叠分片，是路由与复制的单位。
+- **Replica：** Partition 的一份副本（默认 N=3/5，跨 AZ/POD）；**无主，任一副本可读写**（见 [`04-replication-consistency.md`](04-replication-consistency.md)）。
 
-> 取舍：Proxy 简化了多语言客户端接入与扩缩容透明性，代价是多一跳。对延迟极敏感的路径可走智能 SDK 直连。
+## 3. 组件职责（五组核心模块）
 
-### 2.3 Storage Node（存储节点）
-- 每个节点运行存储引擎，承载 **多个分片的 Raft 副本**（Multi-Raft，见 [`04-replication-consistency.md`](04-replication-consistency.md)）。
-- 一个节点上既可能有某些分片的 Leader，也可能有另一些分片的 Follower，由 PD 均衡。
-- 负责：Raft 日志持久化与复制、状态机应用（写入 RocksDB）、本地读、副本快照收发。
-- 在本机内 **共享一个 RocksDB 实例**：不同分片以 Key 前缀隔离（类 TiKV 的 store/region 模型），
-  避免"每分片一个 RocksDB"带来的资源碎片与打开文件数膨胀。
-- Raft 日志使用 **独立的日志引擎**（见 [`03-storage-engine.md`](03-storage-engine.md) §6）。
+### 3.1 Client / Proxy / 重型 SDK（用户面）
+- **Client：** 用户侧核心库，向上提供各数据结构接口，向下经 **MetaSync** 从 MetaServer 拉取路由信息、
+  直接与 DataNode 交互。集成 **重试、Backup Request、热 Key 承载、流控、鉴权** 等 QoS 能力。
+- **Proxy：** 基于 Client 封装的 **无状态接入层**，对外提供 **Redis 协议（RESP2）与 Thrift**；
+  按元信息把请求路由到合适的 Partition 副本。可水平扩展、置于负载均衡之后。
+- **重型 SDK：** 面向延迟敏感的重度用户，**跳过 Proxy 直连 DataNode**，是 Client 的简单封装，省一跳。
 
-### 2.4 Placement Driver（PD，元数据与调度中心）
-- 自身是一个 **3 节点 Raft 组**，保证元数据高可用与强一致。
-- 维护全局元数据：节点列表与健康度、**槽位 → 分片 → 副本位置** 映射、分片版本（epoch）。
-- 调度职责：
-  - **副本放置与均衡**：让 Leader 与数据均匀分布、跨 AZ 反亲和。
-  - **故障转移**：节点失联超阈值时，在健康节点上补齐副本、恢复复制因子。
-  - **扩缩容编排**：分片分裂/合并、槽位搬迁（见 [`05-sharding-routing.md`](05-sharding-routing.md)）。
-- **不在数据读写关键路径上**：PD 故障期间，已有路由仍可服务，仅调度暂停。
+### 3.2 DataNode（数据面）
+- 数据存储节点，线上 **每块盘部署一个 DataNode**（隔离磁盘故障）。
+- 最小资源单位是 **Core（绑定一个 CPU 核）**：每个 Core 独立 **Busy Polling 协程框架**，
+  请求在 Core 内 **Run-to-Complete**，无线程切换开销。多个 Core 共享一块盘的空间与 IO。
+- 一个 Core 承载 **多个 Replica**；**一个 Core 内所有 Replica 共享一个 WAL**，合并碎片化提交、减少 IO 次数。
+- 每个 Replica 内为三层结构（见 [`03-storage-engine.md`](03-storage-engine.md)）：
+  **数据模型层（Redis 类型）→ 一致性协议层（Anti-Entropy/WAL GC）→ 数据引擎层（暂存层 + 可插拔通用引擎）**。
 
-## 3. 读写流转
+### 3.3 MetaServer（管控面）
+- 多租户中心化架构的 **总管理员**：
+  - **逻辑视图：** Namespace / Table / Partition / Replica 的状态、配置与关系。
+  - **物理视图：** IDC / POD / Rack / DataNode / Disk / Core 的分布与 Replica 位置。
+  - **多租户 QoS 总控：** 在异构机器上按租户与机器负载做副本 Balance 调度。
+  - **故障检测与数据修复：** 节点生命周期管理、数据可靠性跟踪、下线与副本重建。
+- **不在读写关键路径**：MetaServer 抖动时，已有路由仍可读写，仅调度/修复暂停。
 
-### 3.1 写路径（以 `HSET player:{id} gold 100` 为例）
-1. 客户端发送命令到 Proxy。
-2. Proxy 计算 `CRC16("player:{id}") % 16384` → 槽位 → 目标分片 → 该分片 Leader 所在节点。
-3. 转发到 Leader 节点；Leader 将该写封装为一条 Raft 日志条目（可与同批其他写 **batch/group commit**）。
-4. Leader 把日志持久化到本地日志引擎，并并行复制给 Followers。
-5. 多数派（含 Leader 自身）持久化成功后，该条目 **committed**。
-6. Leader 把已提交条目 **apply** 到状态机：按编码写入 RocksDB（见 [`03-storage-engine.md`](03-storage-engine.md)）。
-7. Leader 向 Proxy 返回成功，Proxy 回包客户端。
+### 3.4 RootServer（管控面）
+- 轻量级、**全集群视角** 组件：协调多个集群间的资源配比、支持租户跨集群迁移、提供容灾视图、控制爆炸半径。
 
-> 关键：**写入在多数派落盘后才确认**，这是"不丢数据"的根本保证。
+### 3.5 DTS（Data Transfer Service，旁路）
+- 负责一/二代透明迁移、备份回滚、Dump、订阅等数据流转（见 [`07-backup-recovery.md`](07-backup-recovery.md)）。
 
-### 3.2 读路径（以 `HGET player:{id} gold` 为例）
-- **线性一致读（默认）：** 路由到 Leader，经 **Leader Lease** 或 **ReadIndex** 确认读点后从本地 RocksDB 读。
-- **Follower Read（可选）：** 显式开启时可路由到 Follower，提供有界陈旧读以扩展读吞吐。
+## 4. 物理与容灾拓扑
 
-详见 [`04-replication-consistency.md`](04-replication-consistency.md)。
+- 一个集群可 **跨多地域**（如华东 Region + 华北 Region），每个 Region 含 **3 个 AZ/IDC**。
+- **POD** 是介于 IDC 与机架之间的抽象（非 K8s Pod）：保证 **同一 Partition 的多副本不落在同一 POD**，
+  使单房间空调故障/过热/失火不会同时影响一个分片的所有副本。
+- 多地域下用 **Main Replicator**（每地域一个）主导跨地域同步，避免网状同步的带宽浪费。
 
-## 4. 控制面 vs 数据面
+## 5. 读写流转
+
+### 5.1 写路径（`HSET player:{id} gold 100`，W=2,N=3）
+1. 客户端经 Proxy（或重型 SDK 直连）按元信息路由到该 Partition 的 **某个就近副本**（Replica Coordinator）。
+2. Coordinator 为写分配 **HLC 时间戳**，写本地 **WAL**，并 **并发 forward 到其余副本**。
+3. 收到 **≥ W 个副本 WAL 落盘** 响应即返回成功。
+4. 落盘数据进入 **数据暂存层**，达条件后合并下刷 **通用引擎层**，WAL 随后 GC。
+
+详见 [`04-replication-consistency.md`](04-replication-consistency.md) §3。
+
+### 5.2 读路径（`HGET player:{id} gold`）
+- 按元信息 + **地理位置** 路由到合适副本；Coordinator 依一致性策略查询并按冲突规则合并后返回。
+- `R=1` 最快（最终一致）；`W+R>N` 可得写后读一致；读慢副本用 **Backup Request** 规避。
+
+## 6. 控制面 vs 数据面
 
 | 平面 | 组件 | 是否在读写关键路径 | 故障影响 |
 | --- | --- | --- | --- |
-| 数据面 | Proxy、Storage Node | 是 | 影响对应分片/接入的可用性，由多副本与多实例兜底 |
-| 控制面 | PD | 否 | 调度/扩缩容暂停，但已有读写不受影响 |
+| 用户面 | Client / Proxy / SDK | 是 | 多实例 + 无状态，可水平扩展兜底 |
+| 数据面 | DataNode（Core/Replica） | 是 | 无主多副本，单副本/单 AZ 故障不影响可用性 |
+| 管控面 | MetaServer / RootServer | 否 | 调度/修复暂停，已有读写不受影响 |
 
-这种 **控制面与数据面分离** 是系统具备良好可用性与可运维性的基础。
+## 7. 与对标系统的对应关系
 
-## 5. 与对标系统的对应关系
-
-| GameStore | TiKV | Redis Cluster | 说明 |
+| GameStore | Abase2 | TiKV（对照） | Redis Cluster |
 | --- | --- | --- | --- |
-| Storage Node | TiKV Store | Cluster Node | 承载多副本的存储进程 |
-| Shard / Raft Group | Region | —（Redis 无 Raft） | 复制与一致性单元 |
-| Slot（16384） | —（TiKV 用 range） | Hash Slot（16384） | 路由单元，本设计选哈希槽以兼容 Redis 生态 |
-| PD | PD | Gossip（去中心） | 本设计选中心化 PD，调度更可控 |
-| Proxy | —（智能客户端） | —（智能客户端/代理） | 降低多语言客户端接入成本 |
+| DataNode / Core / Replica | DataNode / Core / Replica | Store / —/ Region 副本 | Cluster Node |
+| Partition（N 副本，无主） | Partition（无主多写） | Region（Raft 组，单 Leader） | —（主从分片） |
+| Replica Coordinator + Quorum | Replica Coordinator + Quorum | Raft Leader + 多数派 | 单主 |
+| MetaServer + RootServer | MetaServer + RootServer | PD | Gossip（去中心） |
+| Proxy / 重型 SDK | Proxy / 重型 SDK | 智能客户端 | 智能客户端/代理 |
+| HLC + LWW + CRDT | HLC + LWW + CRDT | —（单主无冲突） | —（单主无冲突） |

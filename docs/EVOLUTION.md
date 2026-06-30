@@ -176,6 +176,21 @@
 - **后续方向：** 据新路线推进实现；为强一致字段定档默认配置（见待决问题）。
 - **关联：** 上述文档；arXiv:2505.07692；火山引擎/掘金 Abase2 系列文章。
 
+### MR-0008 · 落实无主多写：重写架构与复制一致性文档
+- **日期：** 2026-06-30
+- **类型：** AI（按 MR-0007 决策实现文档改写）
+- **动机：** 把 MR-0007 的路线修正落到核心设计文档。
+- **关键决策：**
+  - 重写 [`design/04-replication-consistency.md`](design/04-replication-consistency.md)：选型论证（为什么不用 Raft）、
+    Partition+N Replica+Replica Coordinator 模型、Quorum 写读路径、可调一致性旋钮（含给"财产"字段的建议）、
+    HLC+LWW、Operation-based CRDT、Anti-Entropy(ReplicaLog/Seqno)、故障恢复、与 Redis 主从/Raft 三方对比。
+  - 重写 [`design/02-architecture.md`](design/02-architecture.md)：用户面/管控面/数据面三视角，五组核心模块
+    （Client/Proxy/重型SDK、DataNode(Core/Run-to-Complete/共享WAL)、MetaServer、RootServer、DTS）；
+    Namespace/Table/Partition/Replica 数据模型；POD 容灾与多地域 Main Replicator。
+- **影响范围：** 重写 `design/02-architecture.md`、`design/04-replication-consistency.md`。
+- **后续方向：** 同步更新存储引擎（双层引擎/CRDT）、分片路由、部署/备份/指标/路线图。
+- **关联：** MR-0007；上述两份文档。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
