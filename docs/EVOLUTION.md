@@ -117,6 +117,22 @@
 - **后续方向：** 设计公有云部署、备份恢复、可观测性与演进路线图。
 - **关联：** 上述两份文档。
 
+### MR-0006 · 公有云部署、备份恢复、可观测性与演进路线图
+- **日期：** 2026-06-30
+- **类型：** AI
+- **动机：** 让设计具备"能在公有云落地、能运维、能演进"的完整闭环，收束第一批设计文档。
+- **关键决策：**
+  - 部署（[`design/06-deployment-cloud.md`](design/06-deployment-cloud.md)）：Kubernetes Operator + `GameStoreCluster` CRD（含 YAML 草案）；
+    Proxy 用 Deployment+HPA、Storage 用 StatefulSet+云盘、PD 3 副本；跨 AZ 拓扑约束；仅依赖块存储/对象存储/LB 以保多云可移植。
+  - 备份恢复（[`design/07-backup-recovery.md`](design/07-backup-recovery.md)）：强调"多副本≠备份"；RocksDB Checkpoint 全量 + Raft 日志归档 → 对象存储；
+    支持按分片并行恢复与 PITR；给出从现有 Redis 的离线/在线迁移与灰度切换方案。
+  - 可观测性（[`design/08-observability-ops.md`](design/08-observability-ops.md)）：定义 Proxy/Store/PD 指标、慢日志/审计、追踪、告警规则与初始 SLO。
+  - 路线图（[`design/09-roadmap.md`](design/09-roadmap.md)）：Phase 0 设计 → 1 单机 MVP → 2 单分片高可用 → 3 分布式(Multi-Raft+PD+Proxy)
+    → 4 云原生(Operator+备份) → 5 生产化；以能力里程碑+依赖描述，不排日历时间。
+- **影响范围：** 新增 `design/06-deployment-cloud.md`、`07-backup-recovery.md`、`08-observability-ops.md`、`09-roadmap.md`。
+- **后续方向：** 第一批设计文档完成，进入 Phase 1 实现单机 Redis 兼容引擎 MVP。
+- **关联：** 上述四份文档。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
