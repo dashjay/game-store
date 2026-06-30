@@ -1,0 +1,14 @@
+# This image's default `cc`/`c++` alternative is clang, which here cannot find
+# the libstdc++ headers (when compiling bundled RocksDB) nor the libstdc++.so
+# link path (when linking the C++ RocksDB into the Rust binary). g++ handles
+# both, so we pin the C/C++ toolchain and linker to GCC.
+#
+# If your environment has a fully working clang toolchain you can delete this
+# file or override these values.
+
+[env]
+CC = "gcc"
+CXX = "g++"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "g++"

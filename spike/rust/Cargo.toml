@@ -1,0 +1,18 @@
+[package]
+name = "gamestore-spike"
+version = "0.1.0"
+edition = "2021"
+description = "GameStore Phase-1 spike (Rust): RESP2 server on RocksDB with metadata+subkey+version encoding and compaction-filter GC"
+
+[[bin]]
+name = "gamestore-spike"
+path = "src/main.rs"
+
+[dependencies]
+# rust-rocksdb (published as `rocksdb`). Bundles RocksDB and exposes the
+# compaction-filter API we need for version-based subkey GC. This is the same
+# binding family TiKV uses, which is one of the arguments in the language plan.
+rocksdb = "0.22"
+
+[profile.release]
+opt-level = 3
