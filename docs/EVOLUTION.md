@@ -100,6 +100,23 @@
 - **后续方向：** 设计复制一致性（Multi-Raft）与分片路由（PD + Proxy）。
 - **关联：** 上述两份文档。
 
+### MR-0005 · 复制一致性（Multi-Raft）与分片路由（PD + Proxy）
+- **日期：** 2026-06-30
+- **类型：** AI
+- **动机：** 落实"不丢数据 + 高可用 + 水平扩展"三大目标的核心机制。
+- **关键决策：**
+  - 复制与一致性（[`design/04-replication-consistency.md`](design/04-replication-consistency.md)）：
+    每分片一个 Raft 组、默认 3 副本跨 AZ；多数派落盘才确认写入（不丢数据）；
+    Leader Lease/ReadIndex 提供线性一致读，可选 Follower Read 扩展读；写入 batch/group commit 应对高频写；
+    成员变更用 Joint Consensus；定义 Leader 故障转移与副本补齐流程；明确 CP 可用性边界；对比 Redis 主从。
+  - 分片与路由（[`design/05-sharding-routing.md`](design/05-sharding-routing.md)）：
+    兼容 Redis Cluster 的 **16384 哈希槽**，槽→分片→副本映射由 PD 维护并带 epoch；
+    Proxy 路由（屏蔽 MOVED/ASK）或智能 SDK 直连；扩缩容用副本搬迁/分片分裂，迁移期 ASK 重定向、不阻塞前台；
+    负载均衡、跨 AZ 反亲和与热点治理。
+- **影响范围：** 新增 `design/04-replication-consistency.md`、`design/05-sharding-routing.md`。
+- **后续方向：** 设计公有云部署、备份恢复、可观测性与演进路线图。
+- **关联：** 上述两份文档。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
