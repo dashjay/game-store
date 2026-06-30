@@ -85,6 +85,21 @@
 - **后续方向：** 据此设计系统架构与存储引擎。
 - **关联：** 上述两份文档。
 
+### MR-0004 · 系统架构、存储引擎与 Redis 数据编码
+- **日期：** 2026-06-30
+- **类型：** AI
+- **动机：** 把总体取舍落到具体组件分层与磁盘上的数据布局。
+- **关键决策：**
+  - 架构（[`design/02-architecture.md`](design/02-architecture.md)）：四层 —— Client/SDK → 无状态 Proxy（RESP/路由/热点缓解）
+    → Storage Node（Multi-Raft，多分片共享一个 RocksDB，按分片前缀隔离）→ PD（3 节点 Raft 的元数据与调度中心）。
+    明确 **控制面（PD）与数据面分离**，PD 不在读写关键路径。
+  - 存储引擎（[`design/03-storage-engine.md`](design/03-storage-engine.md)）：选 RocksDB/LSM（写优化、覆盖友好、低成本）；
+    采用"**元数据键 + 子键 + 版本号**"编码 Redis 类型，version 递增实现 O(1) 逻辑删除 + Compaction Filter 后台 GC；
+    **Raft 日志引擎与 KV 数据引擎分离**以稳定写延迟；给出 MemTable/组提交/Compaction/限速等写优化方向。
+- **影响范围：** 新增 `design/02-architecture.md`、`design/03-storage-engine.md`。
+- **后续方向：** 设计复制一致性（Multi-Raft）与分片路由（PD + Proxy）。
+- **关联：** 上述两份文档。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
