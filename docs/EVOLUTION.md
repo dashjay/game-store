@@ -207,6 +207,23 @@
 - **后续方向：** 收尾更新部署 CRD、备份、可观测性指标、路线图。
 - **关联：** MR-0007/0008；上述两份文档。
 
+### MR-0010 · 部署/备份/可观测性/路线图对齐无主多写
+- **日期：** 2026-06-30
+- **类型：** AI
+- **动机：** 收尾，让下游文档与无主多写路线完全自洽，消除 Raft/PD/选主等残留术语。
+- **关键决策：**
+  - [`design/06-deployment-cloud.md`](design/06-deployment-cloud.md)：CRD 改为 `dataNode/partition(replicaCount + consistency.mode/quorum)/meta/rootServer`；
+    组件映射改为 DataNode/MetaServer/RootServer；高可用与滚动升级强调"无主、无需转主"。
+  - [`design/07-backup-recovery.md`](design/07-backup-recovery.md)：快照基于引擎 Checkpoint(按 Partition)，
+    增量改为 **Operation 日志/ReplicaLog 归档 + 按 HLC 重放** 的 PITR；恢复用 Anti-Entropy 补副本；DTS 承载迁移。
+  - [`design/08-observability-ops.md`](design/08-observability-ops.md)：指标改为 Quorum 写延迟、quorum_not_met、
+    anti_entropy_lag、replicalog_backlog、conflict_resolved、Backup Request、多租户 NRC/Quota/WFQ；SLO 增加"最终一致收敛秒级"。
+  - [`design/09-roadmap.md`](design/09-roadmap.md)：里程碑改为 Phase 2 多副本无主多写(Quorum+WAL) → Phase 3 冲突解决与最终一致(HLC/LWW/CRDT/Anti-Entropy)
+    → Phase 4 分布式(Partition+MetaServer+Proxy) → Phase 5 云原生 → Phase 6 生产化(多租户)。
+- **影响范围：** 更新 `design/06`、`07`、`08`、`09`。至此第一批文档的无主多写改造全部完成。
+- **后续方向：** 进入实现阶段（Phase 1）。
+- **关联：** MR-0007/0008/0009。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
