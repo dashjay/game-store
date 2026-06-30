@@ -2,9 +2,13 @@
 
 > 一个面向高频游戏状态写入场景的、**持久化**、**高可用**、**兼容 Redis 协议** 的分布式键值存储。
 >
-> 设计目标对标 [TiKV](https://tikv.org/)、[Apache Kvrocks](https://kvrocks.apache.org/) 与字节跳动内部的 **Abase** 系统：
-> 用磁盘（SSD）做主存储、用 Raft 做多副本一致性、用 Redis 协议做接入层，
+> 设计主要对标字节跳动内部的 **Abase**（Abase2）系统，并参考 [Apache Kvrocks](https://kvrocks.apache.org/) 的 Redis-on-RocksDB 编码：
+> 用磁盘（SSD）做主存储、用 **无主多写 + 可调 Quorum + CRDT** 做高可用复制、用 Redis 协议做接入层，
 > 在公有云上以低成本提供稳定、可靠、可水平扩展的在线 KV 服务。
+>
+> **关于复制机制：** 与 Abase 一致，本系统 **不使用 Raft**。Abase 刻意避开共识/主从协议以追求"极高可用"
+> （消除选主停顿、规避慢节点），默认 **最终一致**，并向用户开放 `Quorum(W/R/N)` 与"多主/单主半同步"模式选择。
+> 该路线的来龙去脉（含从 Raft 转向无主多写的决策与公开依据）见 [`docs/EVOLUTION.md`](docs/EVOLUTION.md) 的 **MR-0007**。
 
 ---
 
@@ -19,19 +23,20 @@
 
 **GameStore** 用一句话概括其取舍：
 
-> 把"主存储"从内存换成 SSD（RocksDB / LSM-Tree），把"可靠性"交给 Raft 多副本，
+> 把"主存储"从内存换成 SSD（RocksDB / LSM-Tree），把"高可用"交给 **无主多写 + 可调 Quorum + CRDT**，
 > 把"接入兼容性"交给 Redis 协议，从而在 **不改业务代码** 的前提下，
-> 获得 **持久、稳定、低成本、可水平扩展** 的存储能力。
+> 获得 **持久、稳定、低成本、可水平扩展、极高可用** 的存储能力。
 
 ## 核心特征
 
 | 维度 | 方案 |
 | --- | --- |
-| 接口协议 | 兼容 Redis RESP2/RESP3，支持 String / Hash / Set / ZSet / List 等常用类型 |
-| 存储引擎 | RocksDB（LSM-Tree），SSD 为主存、内存做 Block Cache，写优化 |
-| 一致性与高可用 | Multi-Raft，每个分片 3 副本跨可用区，自动选主与故障转移 |
-| 水平扩展 | 哈希分片（兼容 Redis Cluster 槽位模型）+ Placement Driver 自动均衡 |
-| 持久化 | 写入经 Raft 多数派落盘后才确认，配合对象存储做快照与 PITR |
+| 接口协议 | 兼容 Redis RESP2/RESP3，支持 String / Hash / Set / ZSet / List 等常用类型；非幂等命令用 CRDT 保语义 |
+| 存储引擎 | 双层引擎：数据暂存层（多版本冲突合并）+ 可插拔通用引擎（RocksDB/LSH），SSD 主存、写优化 |
+| 一致性与高可用 | **无主多写**，每个分片 N 副本跨可用区，任一副本可读写；可调 Quorum（典型 W=3,R=3,N=5），可选单主半同步 |
+| 冲突解决 | HLC 全局时间戳版本化 + LWW（幂等）+ Operation-based CRDT（`INCR`/`APPEND` 及复杂结构）+ Anti-Entropy 修复 |
+| 水平扩展 | 哈希分片到 Partition + MetaServer 路由与多租户均衡调度 |
+| 持久化 | 写入达到 Quorum（W 个副本 WAL 落盘）后才确认，配合对象存储做快照与 PITR |
 | 公有云部署 | Kubernetes Operator + 云盘 + 对象存储，开箱即用、跨 AZ 部署 |
 | 适用负载 | 高频小值更新（玩家状态：每人 ~50 个字段，每字段 1~2 次/秒） |
 

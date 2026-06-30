@@ -31,10 +31,16 @@
 
 > 这一节描述**长期不变**的目标，作为所有决策的锚点。变更需谨慎并记录原因。
 
-- **不丢数据。** 玩家财产类数据必须强持久化：写入须经 Raft 多数派落盘后才返回成功。
-- **兼容 Redis。** 业务以最小改动（理想为零改动）从现有 Redis 迁移过来。
-- **高可用。** 单节点/单可用区故障不影响整体可用性，故障自动恢复。
+- **不丢数据。** 写入须经 **Quorum 落盘**（达到用户配置的 W 个副本 WAL 持久化）后才返回成功；
+  对玩家财产类数据可进一步配置 `W+R>N` 的写后读一致或单主半同步模式。
+  （注：MR-0007 起，持久化保证从"Raft 多数派"调整为"Quorum + WAL"，理由见该记录。）
+- **兼容 Redis。** 业务以最小改动（理想为零改动）从现有 Redis 迁移过来；
+  对非幂等命令（`INCR`/`APPEND` 等）与复杂结构用 **CRDT** 保持语义完全兼容。
+- **高可用（极高可用）。** 追求 Abase 式"极高可用"：**消除选主/主从切换造成的秒级不可用，并从架构上规避慢节点**。
+  单节点/单可用区故障不影响整体可用性，故障自动恢复。
 - **低成本。** 以 SSD 为主存替代全内存，存储成本随数据量增长而可控。
+- **可调一致性。**（MR-0007 新增）默认 **最终一致**（无主多写），并向用户开放
+  `Quorum(W/R/N)` 与"多主/单主半同步"模式选择，让业务在一致性、可用性、可靠性、性能之间自行取舍。
 - **可水平扩展。** 吞吐与容量随节点数近似线性增长，扩缩容对业务透明。
 - **云原生。** 在主流公有云上可一键部署、跨可用区、自动运维。
 
@@ -133,6 +139,43 @@
 - **后续方向：** 第一批设计文档完成，进入 Phase 1 实现单机 Redis 兼容引擎 MVP。
 - **关联：** 上述四份文档。
 
+### MR-0007 · 架构路线修正：从 Multi-Raft 转向 Abase 式「无主多写」
+- **日期：** 2026-06-30
+- **类型：** AI+Human（**人类干预**：质疑 Raft 选型并明确"要做和 Abase 很接近的产品"；AI 查证并改写设计）
+- **动机：** MR-0001~0006 的设计借鉴 TiKV，以 **Multi-Raft（CP）** 作为复制与一致性机制。
+  人类参与者对"是否需要 Raft"提出质疑，并要求对齐 **字节跳动 Abase**（完全兼容 Redis 接口）。
+  经查证，**Abase 并不使用 Raft**，反而是 **刻意避开** 共识/主从协议以追求"极高可用"。需据此修正路线。
+- **关键证据（公开资料）：**
+  - VLDB/SIGMOD 2025 论文《ABase: the Multi-Tenant NoSQL Serverless Database…》（arXiv:2505.07692）：
+    "ABase supports the Redis protocol… and **enables eventual consistency**"。
+  - 火山引擎《字节跳动极高可用 KV 存储系统详解》（作者：Abase2 负责人刘健）：明确对比 Raft/2PC/Quorum，
+    选择 **无主 + Quorum** 以获得更高可用性；"Abase 2.0 是一套**多写架构**…没有了主从架构的切换主节点的时间…
+    从架构层面屏蔽了慢节点"。
+  - 《Abase2：字节跳动新一代高可用 NoSQL 数据库》（Abase NoSQL team）：
+    Multi-Leader（默认，最终一致）+ 单主半同步（可选，强一致）；冲突解决用 **HLC + LWW + Operation-based CRDT**；
+    **Anti-Entropy（ReplicaLog/Seqno）** 修复一致性；**双层引擎**（数据暂存层 + 可插拔通用引擎）。
+- **关键决策：**
+  1. **否决 Raft 作为主复制机制。** 改为 **无主多写（Leaderless Multi-Write）+ 可调 Quorum（W+R>N，典型 W=3,R=3,N=5）**，
+     默认 **最终一致**；保留 **单主半同步（Leader&Followers，类 MySQL semi-sync）** 作为强一致可选模式。
+     —— Raft 仍作为"已评估并否决的备选项"保留在文档中，其取舍理由（选主停顿、慢节点）正是否决依据。
+  2. **冲突解决：** 写入用 **HLC 时间戳** 版本化；幂等命令 **LWW**；非幂等（`INCR`/`APPEND`）与复杂结构（String/Hash/ZSet/List）
+     用 **Operation-based CRDT**，保证 **完全兼容 Redis 语义**。
+  3. **一致性修复：** 用 **Anti-Entropy + ReplicaLog（内存进度向量）** 替代 Dynamo/Cassandra 的 Merkle-tree 全量 Diff。
+  4. **引擎分层：** **数据暂存层（Conflict Resolver，多版本合并）+ 通用引擎层（可插拔 RocksDB/LSH，存单版本最终值）**；
+     配合 Operation 日志的定期 **Checkpoint**。
+  5. **组件对齐 Abase：** PD → **MetaServer**（元信息 + 多租户 QoS + 故障检测/修复）+ **RootServer**（多集群协调）；
+     Storage Node → **DataNode**（Core/Run-to-Complete 协程、每盘一 DataNode、Core 内多 Replica 共享一个 WAL）；
+     Raft Group → **Partition + N Replica + Replica Coordinator（任一副本可写）**；新增 **重型 SDK 直连** 与 **DTS 迁移**。
+  6. **针对游戏"财产"数据的建议：** 高频计数/状态用多主 + CRDT 计数器（天然契合"每字段 1~2 次/秒"）；
+     金币/财产等强一致字段按表配置 **单主半同步** 或 **`W+R>N` 写后读一致**。
+- **影响范围：** 重写 [`design/04-replication-consistency.md`](design/04-replication-consistency.md)（核心机制）；
+  更新 [`README.md`](../README.md)、[`design/00-overview.md`](design/00-overview.md)（CAP 立场/目标/对标）、
+  [`design/02-architecture.md`](design/02-architecture.md)（组件）、[`design/03-storage-engine.md`](design/03-storage-engine.md)（双层引擎/CRDT）、
+  [`design/05-sharding-routing.md`](design/05-sharding-routing.md)（Partition/Replica 模型与多地域）、
+  以及 `06/07/08/09`（CRD/备份/指标/路线图）的术语与机制。
+- **后续方向：** 据新路线推进实现；为强一致字段定档默认配置（见待决问题）。
+- **关联：** 上述文档；arXiv:2505.07692；火山引擎/掘金 Abase2 系列文章。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
@@ -141,7 +184,10 @@
 
 > 这里登记尚未拍板、需要人类干预或后续讨论的问题。解决后在对应 MR 记录中标注。
 
-- [ ] 分片内单 Key 强一致已确定；**跨分片事务**是否需要、以何种方式（2PC / Percolator）实现，待定。
+- [x] **是否使用 Raft：已否决（MR-0007）。** 经查证 Abase 并不使用 Raft，而采用无主多写 + Quorum + CRDT。
+  本项目对齐 Abase，默认无主多写、可选单主半同步，不以 Raft 作为主复制机制。
+- [ ] 默认最终一致已确定；**玩家财产/金币等强一致字段**的推荐配置（单主半同步 vs `W+R>N`）需结合业务定档。
+- [ ] **跨分片事务**是否需要、以何种方式实现，待定（无主多写下事务语义更复杂）。
 - [ ] 是否需要 **多地域 Active-Active**；若需要，一致性模型与冲突解决策略待定。
 - [ ] 大 Value（如玩家完整快照 JSON）是否启用 **BlobDB / KV 分离**，需结合真实 Value 分布评估。
 - [ ] Proxy 是否对所有客户端强制，还是为支持 Redis Cluster 协议的智能客户端提供直连路径。
