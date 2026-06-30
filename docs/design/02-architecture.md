@@ -53,12 +53,30 @@
 
 ## 3. 组件职责（五组核心模块）
 
-### 3.1 Client / Proxy / 重型 SDK（用户面）
-- **Client：** 用户侧核心库，向上提供各数据结构接口，向下经 **MetaSync** 从 MetaServer 拉取路由信息、
-  直接与 DataNode 交互。集成 **重试、Backup Request、热 Key 承载、流控、鉴权** 等 QoS 能力。
-- **Proxy：** 基于 Client 封装的 **无状态接入层**，对外提供 **Redis 协议（RESP2）与 Thrift**；
-  按元信息把请求路由到合适的 Partition 副本。可水平扩展、置于负载均衡之后。
-- **重型 SDK：** 面向延迟敏感的重度用户，**跳过 Proxy 直连 DataNode**，是 Client 的简单封装，省一跳。
+### 3.1 接入方式（用户面）
+
+> **默认即 Proxy：业务用标准 Redis 客户端直连 Proxy，零改造，不需要任何自研 SDK。**
+> 真正复杂的工作（Quorum 协调、冲突解决、副本同步）都在 **服务端**（Replica Coordinator，见 [`04-replication-consistency.md`](04-replication-consistency.md)），
+> 客户端无需自己做多副本扇出，因此普通 Redis 客户端即可使用。
+
+- **Proxy（默认、一等公民）：** **无状态接入层**，对外提供 **Redis 协议（RESP2）与 Thrift**；
+  按 MetaServer 元信息把请求路由到合适的 Partition 副本，并负责 **重试、Backup Request、热 Key 承载、流控、鉴权** 等 QoS。
+  可水平扩展、置于负载均衡之后。**业务侧只需把现有 Redis 连接串指向 Proxy 即可。**
+- **重型 SDK（可选优化）：** 面向延迟极敏感的少数重度用户，**跳过 Proxy 直连 DataNode**，省一跳并提供更精细的客户端 QoS。
+  它是可选项，不是接入前提。
+- **Client（内部实现，非业务依赖）：** Proxy 与重型 SDK 共同的底层库，经 **MetaSync** 拉取路由、直连 DataNode、内置上述 QoS。
+  **普通业务不直接集成它**——它只是 Proxy/SDK 的构建块。
+
+#### 接入方式对比
+
+| 接入方式 | 客户端要求 | 路由 / QoS 所在 | 延迟 | 适用 |
+| --- | --- | --- | --- | --- |
+| **① 标准 Redis 客户端 → Proxy（默认）** | 任意现成 Redis 客户端，**零改造** | Proxy（路由/重试/Backup Request/热点/限流） | 多一跳 | 绝大多数业务、平滑迁移 |
+| **② 重型 SDK → DataNode 直连（可选）** | 自研重型 SDK | SDK（就近路由 + 精细 QoS） | 最低 | 延迟极敏感的少数重度用户 |
+| **③ DataNode 直接 RESP + Cluster 重定向（未来可选）** | 标准 Redis Cluster 客户端（自路由） | 客户端自路由，QoS 较少 | 少一跳 | 已用 Cluster 客户端者；非默认承诺 |
+
+> 方式 ③（去掉 Proxy、让 DataNode 直接讲 RESP 并用 `MOVED`/`ASK` 让客户端自路由）技术上可行，
+> 但会失去 Proxy 提供的跨 AZ 就近路由、慢副本规避、连接收敛、多租户限流等能力，**仅列为未来可选，不作默认**。
 
 ### 3.2 DataNode（数据面）
 - 数据存储节点，线上 **每块盘部署一个 DataNode**（隔离磁盘故障）。

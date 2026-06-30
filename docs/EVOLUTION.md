@@ -224,6 +224,24 @@
 - **后续方向：** 进入实现阶段（Phase 1）。
 - **关联：** MR-0007/0008/0009。
 
+### MR-0011 · 明确接入方式：默认 Proxy + 标准 Redis 客户端，自研 SDK 仅为可选
+- **日期：** 2026-06-30
+- **类型：** AI+Human（**人类干预**：确认"默认 proxy 即可"，无需复杂 SDK）
+- **动机：** 人类参与者质疑"是否必须有复杂 SDK、能否直接用 Redis 协议"。查证后明确：
+  Quorum 协调/冲突解决/副本同步都在服务端（Replica Coordinator），**普通 Redis 客户端即可使用**，
+  自研 SDK 只是可选的低延迟优化，不应成为接入门槛。结论：**默认走 Proxy。**
+- **关键决策：**
+  - **Proxy + 标准 Redis 客户端 = 一等公民/默认接入**，零改造、无需自研 SDK。
+  - **重型 SDK = 可选优化**（省一跳 + 精细 QoS），面向延迟极敏感的少数重度用户，可推迟到后期。
+  - **"Client 核心库" 澄清为 Proxy/SDK 的内部实现，非业务依赖**（消除"必须集成复杂 SDK"的误解）。
+  - 方式③（DataNode 直接 RESP + Cluster 重定向、去掉 Proxy）**仅列为未来可选，不作默认**
+    （会失去就近路由/慢副本规避/连接收敛/多租户限流等 Proxy 能力）。
+- **影响范围：** 重写 [`design/02-architecture.md`](design/02-architecture.md) §3.1 为"接入方式（三档）"+ 对比表；
+  更新 [`README.md`](../README.md) 接口协议行、[`design/00-overview.md`](design/00-overview.md) 目标 2、
+  [`design/09-roadmap.md`](design/09-roadmap.md) Phase 4 接入定位（SDK 可推迟到 Phase 6）。
+- **后续方向：** 实现阶段优先做 Proxy + RESP，不被 SDK 拖累。
+- **关联：** MR-0007（无主多写，Coordinator 在服务端是本结论的前提）。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---

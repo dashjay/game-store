@@ -31,7 +31,7 @@
 
 | 维度 | 方案 |
 | --- | --- |
-| 接口协议 | 兼容 Redis RESP2/RESP3，支持 String / Hash / Set / ZSet / List 等常用类型；非幂等命令用 CRDT 保语义 |
+| 接口协议 | 兼容 Redis RESP2/RESP3，**标准 Redis 客户端零改造直连 Proxy（默认，无需自研 SDK）**；重型 SDK 仅为可选优化 |
 | 存储引擎 | 双层引擎：数据暂存层（多版本冲突合并）+ 可插拔通用引擎（RocksDB/LSH），SSD 主存、写优化 |
 | 一致性与高可用 | **无主多写**，每个分片 N 副本跨可用区，任一副本可读写；可调 Quorum（典型 W=3,R=3,N=5），可选单主半同步 |
 | 冲突解决 | HLC 全局时间戳版本化 + LWW（幂等）+ Operation-based CRDT（`INCR`/`APPEND` 及复杂结构）+ Anti-Entropy 修复 |

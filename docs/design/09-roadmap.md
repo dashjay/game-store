@@ -54,7 +54,8 @@ Phase 6 生产化 ◀── Phase 5 云原生(Operator/备份) ◀── Phase 4
 - **范围：**
   - Namespace/Table/Partition/Replica 模型，DataNode 多 Core/多 Replica（见 [`05-sharding-routing.md`](05-sharding-routing.md)）。
   - MetaServer：元信息、路由映射（带 epoch）、心跳、多租户负载均衡、故障检测、副本重建。
-  - Proxy：RESP2/Thrift 路由、连接复用、Backup Request；可选重型 SDK 直连。
+  - **Proxy 为默认接入**：RESP2/Thrift 路由、连接复用、Backup Request，标准 Redis 客户端零改造直连；
+    重型 SDK 直连为 **可选项**，可推迟到 Phase 6。
   - 扩缩容：Replica 重建 + Anti-Entropy 追平，迁移期不阻塞前台。
 - **退出标准：** 加/减节点对业务透明、负载自动均衡；单 AZ 故障整体仍可读写。
 - **依赖：** Phase 3。
