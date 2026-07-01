@@ -1,0 +1,7 @@
+# Pin the toolchain so every contributor and CI job builds GameStore with the
+# same stable Rust. Bump deliberately (and record the reason in EVOLUTION.md)
+# rather than drifting with whatever is installed locally.
+[toolchain]
+channel = "1.83.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

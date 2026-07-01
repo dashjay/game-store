@@ -1,0 +1,56 @@
+# cargo-deny policy for the GameStore workspace.
+# Runs in CI as `cargo deny check` (advisories, licenses, bans, sources).
+# Config uses the v2 schema (cargo-deny >= 0.14).
+
+[graph]
+# Check the platforms we actually target/build for.
+targets = ["x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+version = 2
+# RustSec advisory database.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Fail on known-vulnerable dependencies; warn (don't fail) on yanked crates so a
+# transient yank upstream doesn't block unrelated work.
+yanked = "warn"
+# Advisories intentionally accepted go here (id + rationale). Empty for now.
+ignore = []
+
+[licenses]
+version = 2
+# The allow-list below is intentionally forward-looking (covers deps upcoming
+# MRs will pull in, e.g. RocksDB), so don't warn about currently-unused entries.
+unused-allowed-license = "allow"
+# Permissive licenses compatible with our Apache-2.0 project.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+# Per-crate license exceptions (crate = specific license) go here.
+exceptions = []
+
+[bans]
+# Warn on duplicate versions of the same crate; deny obvious footguns.
+multiple-versions = "warn"
+wildcards = "warn"
+# Crates that must never appear in the tree can be listed here.
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Only allow crates from crates.io by default.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,27 @@
+[package]
+name = "gamestore-datanode"
+description = "GameStore DataNode: minimal tokio RESP server (I-01), grows into the single-node MVP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Split into a library (server logic, integration-testable) + a thin binary.
+[lib]
+name = "gamestore_datanode"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gamestore-datanode"
+path = "src/main.rs"
+
+[dependencies]
+gamestore-common = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
