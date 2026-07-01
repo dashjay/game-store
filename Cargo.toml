@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gamestore-common",
+    "crates/gamestore-protocol",
+    "crates/gamestore-engine",
+    "crates/gamestore-datamodel",
+    "crates/gamestore-datanode",
+]
+
+# Crates that are part of the plan (§2.1) but not yet introduced in I-01.
+# They are intentionally left out of `members` until their own MR lands so
+# the workspace stays buildable and CI stays meaningful.
+#   gamestore-wal / gamestore-replication / gamestore-meta / gamestore-proxy / gamestore-cli
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "Apache-2.0"
+repository = "https://github.com/dashjay/gamestore"
+authors = ["GameStore contributors"]
+
+# Common dependencies shared across crates. Concrete crates opt in via
+# `foo = { workspace = true }` so versions stay aligned in one place.
+[workspace.dependencies]
+# Async runtime (started on tokio per plan §1; thread-per-core deferred to Phase-2+).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "signal", "time", "sync"] }
+# Error handling: libraries use thiserror, binaries use anyhow (plan §1).
+thiserror = "1"
+anyhow = "1"
+# Configuration: serde + TOML (plan §1).
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# Observability: structured logging + metrics facade (plan §1).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+metrics = "0.23"
+metrics-exporter-prometheus = { version = "0.15", default-features = false }
+# Byte buffers used across the protocol / engine boundaries.
+bytes = "1"
+# Internal workspace crates.
+gamestore-common = { path = "crates/gamestore-common", version = "0.1.0" }
+gamestore-protocol = { path = "crates/gamestore-protocol", version = "0.1.0" }
+gamestore-engine = { path = "crates/gamestore-engine", version = "0.1.0" }
+gamestore-datamodel = { path = "crates/gamestore-datamodel", version = "0.1.0" }
+
+[profile.release]
+opt-level = 3

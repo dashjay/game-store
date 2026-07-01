@@ -1,0 +1,11 @@
+[package]
+name = "gamestore-datamodel"
+description = "GameStore data model layer: Redis type commands (String/Hash/Set/ZSet/List) over the engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]

@@ -1,0 +1,11 @@
+[package]
+name = "gamestore-engine"
+description = "GameStore general engine layer: GeneralEngine trait + RocksDB impl + encoding + compaction GC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
