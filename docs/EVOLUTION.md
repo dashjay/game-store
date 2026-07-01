@@ -291,6 +291,35 @@
 - **后续方向：** 按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) §3 从 **I-01** 开始逐个 MR 实现；每个 MR 合入后在此追加记录。
 - **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md)；MR-0012（spike）；[`spike/README.md`](../spike/README.md)；[`design/09-roadmap.md`](design/09-roadmap.md)。
 
+### MR-0014 · I-01：Cargo workspace 与工程基线（首个实现 MR）
+- **日期：** 2026-07-01
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-01 定义实现）
+- **动机：** MR-0013 拍板 Rust 并给出总体框架与 MR 分解计划。进入实现阶段的第一步，是把计划 §2 的
+  工程骨架真正落地为"能编译、能测、CI 全绿"的 workspace 基线，为后续每个 item（I-02…）提供稳定地基，
+  避免边做边搭脚手架而返工。范围严格限定在 **I-01**，不越界实现 I-02 及之后的协议/引擎/命令层。
+- **关键决策：**
+  - **Workspace 骨架：** 仓库根建 `Cargo.toml`（`[workspace]` + `[workspace.dependencies]` 公共依赖单一来源）、
+    `rust-toolchain.toml`（固定 stable `1.83.0` + rustfmt/clippy）、`deny.toml`（cargo-deny v2 策略：advisories/licenses/bans/sources）。
+  - **crate 边界对齐计划 §2.1：** 本次建 `gamestore-common / gamestore-protocol / gamestore-engine /
+    gamestore-datamodel / gamestore-datanode` 五个 crate；`protocol/engine/datamodel` 为**空骨架**（含 doc 说明各自将在 I-02/03/04 填充），
+    `wal / replication / meta / proxy / cli` 暂不建（待各自 MR），并在 `Cargo.toml` 注释登记，保持 workspace 始终可编译。
+  - **基础设施门面（`gamestore-common`）：** 统一 `Error`（`thiserror`，`#[non_exhaustive]`）+ `Result`；
+    `config`（`serde` + TOML，支持文件/`GAMESTORE_*` 环境变量覆盖）；`telemetry`（`tracing` + `tracing-subscriber`，`EnvFilter`）；
+    `metrics`（`metrics` 门面 + Prometheus recorder，`/metrics` HTTP 端点留到 I-07）。
+  - **最小 RESP 服务（`gamestore-datanode`）：** tokio 异步 accept 循环 + 每连接读写循环，对 `PING` 回 `PONG`（含带参回显）、`ECHO`、`QUIT`，
+    其余命令显式报错（避免"静默忽略未实现命令"）。为便于集成测试拆成 lib + 薄 bin；RESP 解析器为 I-01 自带的极小实现，I-02 起改用 `gamestore-protocol`。
+  - **横切依赖定档：** `tokio`（多线程）/`thiserror`/`anyhow`/`serde`+`toml`/`tracing`(+subscriber)/`metrics`(+prometheus-exporter, `default-features=false` 以免拉入 hyper)。
+  - **锁定可复现构建：** 提交 `Cargo.lock`；为兼容固定的 1.83 工具链，将传递依赖 `indexmap` 钉到 `2.7.1`（连带 `hashbrown` 0.15，规避新版要求的 `edition2024`）。
+  - **CI：** 新增 `.github/workflows/ci.yml`——`cargo fmt --check`、`cargo clippy -D warnings`、`cargo test`、`cargo build` 与独立的 `cargo deny check`（用 `cargo-deny-action@v2`）。
+- **影响范围：** 新增仓库根 `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml`/`deny.toml`/`.gitignore`；
+  新增 `crates/gamestore-{common,protocol,engine,datamodel,datanode}/`；新增 `config/datanode.example.toml`；新增 `.github/workflows/ci.yml`。
+  **不改动既有设计文档与 `spike/`。**
+- **退出标准（已达成）：** `cargo build`/`cargo test`/`cargo fmt --check`/`cargo clippy -D warnings`/`cargo deny check` 全绿；
+  `cargo run -p gamestore-datanode -- --port 6390` 起服务后 `redis-cli -p 6390 ping` 返回 `PONG`（另有 `tests/ping_smoke.rs` 集成测试 + `dispatch`/`config` 单元测试覆盖）。
+- **后续方向：** 按计划 §4 依赖图推进 **I-02（`gamestore-protocol`：RESP2/RESP3 编解码）** 与 **I-03（`gamestore-engine`：通用引擎 + 编码 + Compaction GC）**，
+  逐步把 `spike/rust/` 的模块提升/迁移到对应 crate（磁盘编码保持逐字节一致）。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-01；MR-0013；`spike/rust/`。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
