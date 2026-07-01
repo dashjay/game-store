@@ -42,7 +42,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "-h" | "--help" => {
                 println!(
                     "gamestore-datanode [--config PATH] [--bind ADDR] [--port PORT]\n\n\
-                     Minimal RESP server (I-01): answers PING with PONG."
+                     RESP2/RESP3 server (I-02): PING/ECHO/HELLO/QUIT via gamestore-protocol."
                 );
                 std::process::exit(0);
             }
@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding RESP listener on {addr}"))?;
-    tracing::info!(%addr, "gamestore-datanode listening (I-01: PING/ECHO/QUIT)");
+    tracing::info!(%addr, "gamestore-datanode listening (I-02: PING/ECHO/HELLO/QUIT)");
 
     gamestore_datanode::serve(listener, shutdown_signal())
         .await
