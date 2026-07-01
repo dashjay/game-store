@@ -242,6 +242,32 @@
 - **后续方向：** 实现阶段优先做 Proxy + RESP，不被 SDK 拖累。
 - **关联：** MR-0007（无主多写，Coordinator 在服务端是本结论的前提）。
 
+### MR-0012 · 语言选型双语言 spike：Rust 与 C++ 各实现一遍 Phase-1 最小切片
+- **日期：** 2026-06-30
+- **类型：** AI+Human（**人类干预**：判断"这种存储更适合 C++/Rust 而非 Go"，并要求搭建双语言
+  spike、对外提供 Redis 基础接口、用 Redis 测试做功能验证，两种实现一起提一个 PR）
+- **动机：** 在正式进入实现前，需要为 Rust vs C++ 的语言选型提供 **可亲手运行、可逐文件对照** 的事实
+  依据，而不是纯纸面论证。先排除 Go（GC 长尾延迟、与每 Core Run-to-Complete 模型不契合、调 RocksDB 需 cgo）。
+- **关键决策：**
+  - 在新增目录 [`spike/`](../spike/) 下用 **Rust 与 C++ 各实现一遍** Phase-1 MVP 的最小垂直切片：
+    RESP2 服务端 + RocksDB 通用引擎层 + "元数据键 + 子键 + 版本号"编码（`03-storage-engine.md` §2）
+    + **O(1) 逻辑删除 + Compaction Filter 后台回收旧 version/孤儿子键**（§4）。
+  - 两实现的 **磁盘编码逐字节一致**；GC 用同一机制（内存 `key->当前version` 映射 + compaction filter），
+    保证差异只来自语言/生态而非设计。
+  - 支持命令：`PING/ECHO/SET/GET/DEL/EXISTS/TYPE/EXPIRE/PEXPIRE/TTL/PTTL/HSET/HMSET/HGET/HMGET/HGETALL/HDEL/HLEN/HEXISTS/FLUSHDB`，
+    外加 spike 内省命令 `RAWCOUNT/DBSIZE/COMPACT`（用于验证 GC）。
+  - **功能验证用标准 Redis 客户端**：`test/redis_functional_test.py`（redis-py）对两台服务跑 **同一套 32 项断言**，
+    含 compaction-filter 把孤儿子键物理回收到 0、重建后只见新 version 数据；另有 `redis-cli` 冒烟。
+    一键脚本 [`spike/test/run_all.sh`](../spike/test/run_all.sh) 编译两者并跑全部测试。
+  - 选型差异的"体感点"沉淀在 [`spike/README.md`](../spike/README.md)：RocksDB 集成（C++ 原生 vs Rust `rust-rocksdb` FFI，
+    两者都支持关键的 Compaction Filter）、Compaction Filter 写法、并发/内存安全（C++ 裸指针+mutex 靠人 vs Rust `Arc`+`Send/Sync` 编译期强制）、构建体验。
+  - **环境坑记录：** 本镜像 `cc/c++` 默认指向 clang 且缺可用 libstdc++；Rust 用 `rust/.cargo/config.toml`
+    钉死 `CC/CXX/linker=g++`，C++ 用 `-DCMAKE_CXX_COMPILER=g++`。
+- **影响范围：** 新增 `spike/`（`rust/`、`cpp/`、`test/`、`README.md`、`.gitignore`）。不改动既有设计文档结论。
+- **后续方向：** 由人类基于该 spike 拍板语言；选定后据此启动 Phase-1 正式实现（并补齐 String 之外的类型与 WAL/Quorum）。
+  待决问题清单新增"语言选型"。
+- **关联：** [`spike/README.md`](../spike/README.md)；`docs/design/03-storage-engine.md`、`09-roadmap.md`。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
@@ -258,3 +284,6 @@
 - [ ] 大 Value（如玩家完整快照 JSON）是否启用 **BlobDB / KV 分离**，需结合真实 Value 分布评估。
 - [ ] Proxy 是否对所有客户端强制，还是为支持 Redis Cluster 协议的智能客户端提供直连路径。
 - [ ] 冷热分层 / TTL 驱逐策略的具体阈值，需结合线上数据画像确定。
+- [ ] **实现语言选型（Rust vs C++）**：已排除 Go；MR-0012 提供双语言 spike（[`spike/`](../spike/)）作为对照依据，
+  待人类基于"亲手运行 + 逐文件对照"后拍板。倾向 Rust（编译期内存/并发安全契合"不丢数据"北极星），
+  C++ 在"已有资深 C++ 存储工程师 / 直接移植 Kvrocks 源码"时更优。

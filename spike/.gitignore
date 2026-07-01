@@ -1,0 +1,13 @@
+# Rust build artifacts
+rust/target/
+
+# C++ build artifacts
+cpp/build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local RocksDB data dirs
+*.db/
+/tmp/gamestore-spike-*
