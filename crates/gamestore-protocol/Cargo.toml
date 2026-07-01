@@ -9,3 +9,13 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+gamestore-common = { workspace = true }
+bytes = { workspace = true }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
