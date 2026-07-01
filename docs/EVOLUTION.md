@@ -268,6 +268,29 @@
   待决问题清单新增"语言选型"。
 - **关联：** [`spike/README.md`](../spike/README.md)；`docs/design/03-storage-engine.md`、`09-roadmap.md`。
 
+### MR-0013 · 语言选型拍板 Rust，并给出实现总体框架与 MR 分解计划
+- **日期：** 2026-07-01
+- **类型：** AI+Human（**人类干预**：基于 MR-0012 的双语言 spike 拍板"用 Rust 实现"，并要求先出整体框架 plan、再按 plan 逐个 MR 实现）
+- **动机：** MR-0012 用 Rust 与 C++ 各实现一遍 Phase-1 最小切片作为选型依据。人类基于"亲手运行 + 逐文件对照"
+  后决定 **采用 Rust**。进入正式实现前，需要一份把 [`09-roadmap.md`](design/09-roadmap.md) 的能力里程碑
+  拆成 **可独立交付、可验证的 Rust 工程 MR** 的落地计划，并先把整体代码框架（workspace/crate/关键抽象/横切决策）定档，避免边做边返工。
+- **关键决策：**
+  - **语言：Rust。** 编译期内存/并发安全直接服务于"不丢数据 + 极高可用"的北极星（对照 spike：C++ 裸指针+mutex 靠人保证，Rust 靠 `Arc`+`Send/Sync` 编译期强制）；
+    `rust-rocksdb`（TiKV 同款绑定）已在 spike 验证可支撑最关键的 Compaction Filter。C++ 作为"已评估的备选"保留（在"已有资深 C++ 存储团队/直接移植 Kvrocks 源码"场景更优），但不作默认路线。**排除 Go**（GC 长尾、与 Run-to-Complete 不契合、调 RocksDB 需 cgo）见 MR-0012。
+  - **工程框架：** 单一 **Cargo workspace + 多 crate**，crate 边界严格对齐设计文档层次：
+    `common / protocol / engine / datamodel / wal / replication / datanode / meta / proxy / cli`。定义核心可替换抽象
+    （`GeneralEngine`、`CommandHandler`、`Wal`、`ReplicaTransport`、`ConflictResolver`、`RouteTable`）。
+  - **横切决策定档：** 起步 `tokio`（把"Core/Run-to-Complete thread-per-core"作为 Phase-2+ 性能 MR，用 `glommio`/`monoio` 评估）；
+    `thiserror`(库)/`anyhow`(bin)；`serde`+TOML 配置；`tracing`+`metrics` 可观测；磁盘编码沿用 spike 逐字节布局；
+    CI 强制 `fmt+clippy(-D warnings)+test+deny`；测试分层（单元/属性 `proptest`/并发 `loom`/复用 spike 的 Redis 兼容性用例）。
+  - **MR 分解：** 计划内以 `I-01…I-24` 标识实现 item，**一个 item 一个 MR**，按 Phase 1~6 分组并给出依赖图与统一"完成定义(DoD)"。
+    首个落地为 **I-01（workspace 与工程基线）**（无前置依赖）。
+  - **spike 处置：** `spike/` 保留为参考；I-02/03/04 将其 Rust 模块提升/加固/迁移到对应 crate（编码保持逐字节一致），重叠部分待稳定后另行归档。
+- **影响范围：** 新增 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md)（本次核心产出）；
+  更新 [`README.md`](../README.md)（当前状态/文档导航）与本文件（新增本记录 + 勾选"语言选型"待决项）。**不改动既有设计结论。**
+- **后续方向：** 按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) §3 从 **I-01** 开始逐个 MR 实现；每个 MR 合入后在此追加记录。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md)；MR-0012（spike）；[`spike/README.md`](../spike/README.md)；[`design/09-roadmap.md`](design/09-roadmap.md)。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
@@ -284,6 +307,7 @@
 - [ ] 大 Value（如玩家完整快照 JSON）是否启用 **BlobDB / KV 分离**，需结合真实 Value 分布评估。
 - [ ] Proxy 是否对所有客户端强制，还是为支持 Redis Cluster 协议的智能客户端提供直连路径。
 - [ ] 冷热分层 / TTL 驱逐策略的具体阈值，需结合线上数据画像确定。
-- [ ] **实现语言选型（Rust vs C++）**：已排除 Go；MR-0012 提供双语言 spike（[`spike/`](../spike/)）作为对照依据，
-  待人类基于"亲手运行 + 逐文件对照"后拍板。倾向 Rust（编译期内存/并发安全契合"不丢数据"北极星），
-  C++ 在"已有资深 C++ 存储工程师 / 直接移植 Kvrocks 源码"时更优。
+- [x] **实现语言选型（Rust vs C++）：已拍板 Rust（MR-0013）。** 已排除 Go；MR-0012 的双语言 spike（[`spike/`](../spike/)）作为对照依据，
+  人类基于"亲手运行 + 逐文件对照"后决定采用 **Rust**（编译期内存/并发安全契合"不丢数据"北极星）；
+  C++ 作为已评估备选保留（"已有资深 C++ 存储团队 / 直接移植 Kvrocks 源码"场景更优）。
+  实现框架与 MR 分解见 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md)。

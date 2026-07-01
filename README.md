@@ -62,6 +62,7 @@
 - 备份、恢复与数据迁移：[`docs/design/07-backup-recovery.md`](docs/design/07-backup-recovery.md)
 - 可观测性与运维：[`docs/design/08-observability-ops.md`](docs/design/08-observability-ops.md)
 - 演进路线图：[`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)
+- Rust 实现总体框架与 MR 分解计划：[`docs/design/10-implementation-plan-rust.md`](docs/design/10-implementation-plan-rust.md)
 
 ## 关于本仓库的协作模式
 
@@ -75,5 +76,10 @@
 
 ## 当前状态
 
-项目处于 **Phase 0：设计阶段**。本批次提交为第一批设计文档，尚无可运行代码。
-实现里程碑与阶段划分见 [`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)。
+项目处于 **Phase 0 收尾 / Phase 1 启动**：设计文档已完成，并通过 [`spike/`](spike/) 的双语言（Rust + C++）
+探针为语言选型提供了事实依据。**语言选型已拍板为 Rust**（决策见 [`docs/EVOLUTION.md`](docs/EVOLUTION.md) 的 **MR-0013**）。
+
+进入实现阶段的 **总体框架与逐个 MR 分解计划** 见
+[`docs/design/10-implementation-plan-rust.md`](docs/design/10-implementation-plan-rust.md)：
+我们按"**一个 item 一个 MR**"顺序推进，首个落地为 `I-01`（Cargo workspace 与工程基线）。
+能力里程碑与阶段划分见 [`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)。
