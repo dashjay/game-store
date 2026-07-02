@@ -7,11 +7,14 @@
 //! - [`registry`] — the [`CommandRegistry`] (case-insensitive name → handler +
 //!   Redis-style arity check) and the [`CommandHandler`] / [`ExecCtx`]
 //!   abstractions from the plan (§2.3).
-//! - [`commands`] — the I-04 command set: connectivity (`PING`/`ECHO`),
+//! - [`commands`] — the command set: connectivity (`PING`/`ECHO`),
 //!   String + TTL (`SET`/`GET`/`DEL`/`EXISTS`/`TYPE`/`EXPIRE`/`PEXPIRE`/`TTL`/
 //!   `PTTL`), Hash (`HSET`/`HMSET`/`HGET`/`HMGET`/`HGETALL`/`HDEL`/`HLEN`/
-//!   `HEXISTS`) and the `DBSIZE`/`RAWCOUNT`/`COMPACT` introspection used by the
-//!   consistency tests. Set/ZSet/List follow in I-06.
+//!   `HEXISTS`) from I-04; Set (`SADD`/`SREM`/`SISMEMBER`/`SMEMBERS`/`SCARD`),
+//!   ZSet (`ZADD`/`ZSCORE`/`ZRANGE`/`ZRANGEBYSCORE`/`ZREM`/`ZCARD`) and List
+//!   (`LPUSH`/`RPUSH`/`LPOP`/`RPOP`/`LRANGE`/`LLEN`) from I-06; and the
+//!   `DBSIZE`/`RAWCOUNT`/`COMPACT` introspection used by the consistency
+//!   tests.
 //!
 //! Expiry is lazy and lives in the engine ([`docs/design/03-storage-engine.md`]
 //! §3); this layer only converts relative `EX`/`PX`/`EXPIRE` inputs into
