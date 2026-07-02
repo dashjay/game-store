@@ -406,6 +406,52 @@
 - **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-03；MR-0014（I-01）/MR-0015（I-02）；
   `spike/rust/src/{encoding,gc,storage}.rs`；`spike/rust/.cargo/config.toml`。
 
+### MR-0017 · I-04：`gamestore-datamodel` String + Hash + TTL 命令层
+- **日期：** 2026-07-02
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-04 定义实现）
+- **动机：** MR-0015（I-02）提供了协议层、MR-0016（I-03）提供了引擎层 `Store`，`gamestore-datamodel`
+  仍是空壳。进入 I-04，需要在两者之间落地 **命令层**：把解析好的 Redis 请求（`Vec<Bytes>`）翻译为
+  `Store` 操作、把引擎结果翻译为 RESP 回复 `Frame`，并以 Redis 一致的口径做 arity/参数校验与错误信息。
+  范围严格限定在 I-04：不做 I-05 的服务装配/连接循环，不做 I-06 的 Set/ZSet/List。
+- **关键决策：**
+  - **`CommandRegistry`/`CommandHandler`/`ExecCtx`（plan §2.3）：** 注册表按 **大小写不敏感** 命令名查找
+    handler，并以 **Redis 风格 arity 规格**（正数=精确 argc、负数=最小 argc，含命令名）在进入 handler
+    之前统一校验，`ERR wrong number of arguments for 'xxx' command` 全部免费获得。`CommandHandler` 对任意
+    `Fn(&mut ExecCtx, &[Bytes]) -> Frame` 有 blanket 实现，普通函数直接注册；handler 收到 **完整 argv**
+    （`args[0]`=命令名，同 Redis），使 `HSET`/`HMSET` 共享实现仍按各自名字回复/报错。`ExecCtx` 携带
+    `Store` 与连接协商的 `RespVersion`，为版本感知回复留口。
+  - **命令面：** 连通性 `PING/ECHO`；String+TTL `SET(EX/PX)/GET/DEL/EXISTS/TYPE/EXPIRE/PEXPIRE/TTL/PTTL`；
+    Hash `HSET/HMSET/HGET/HMGET/HGETALL/HDEL/HLEN/HEXISTS`；内省 `DBSIZE/RAWCOUNT/COMPACT`（一致性用例
+    验证 GC 所需）。**`HELLO/QUIT/CLIENT` 等连接级命令与 `FLUSHDB` 等全库 admin 留在 I-05 的 DataNode 装配**——
+    它们关乎连接/服务器而非数据模型。
+  - **TTL 换算归命令层，惰性过期归引擎（03 §3）：** 命令层把相对 `EX` 秒/`PX` 毫秒/`EXPIRE` 秒换算成
+    绝对 unix-epoch `expire_ms` 传给 `Store::set`/`expire_at`；`TTL` 把 `Store::pttl` 的剩余毫秒 **向上取整**
+    为秒（同 Redis）。对齐 Redis 语义的边界：`SET` 的过期参数必须为正整数（否则 `ERR invalid expire time`）、
+    `EX` 与 `PX` 互斥（`ERR syntax error`）、溢出检查；`EXPIRE` 非正数删除 key 且仍回 `1`
+    （引擎 `expire_ms==0` 表示"无过期"，故已过期 deadline 收敛到 1ms-after-epoch 而非 0）。
+  - **错误口径：** `EngineError::WrongType` 原样映射为裸 `WRONGTYPE ...`，其余引擎错误包 `ERR ...`；
+    整数解析失败统一 `ERR value is not an integer or out of range`；未知命令按原始拼写回报。
+  - **RESP3 版本感知回复：** `HGETALL` 在 RESP3 连接回 **原生 map**、RESP2 回扁平 field/value 数组
+    （与协议层的版本感知编码配合，其余命令回复两版本同形）。
+  - **测试：** 42 项——registry 契约（大小写、精确/最小 arity、未知/空命令）7 项；String+TTL 正常/边界/
+    错误路径 20 项；Hash 12 项（含奇数对 arity、WRONGTYPE 全覆盖、二进制安全 field/value、RESP2/RESP3
+    `HGETALL` 双形态）；以及 **`spike/test/redis_functional_test.py` 全部 32 项断言的 Rust 移植**
+    （`functional_parity.rs`，按原顺序对 RocksDB 后端 Store 断言，Python 脚本的 `flushdb` 以"新开 store"
+    等价替代——`FLUSHDB` 是 I-05 的 admin 命令）。真正经 TCP 的端到端复跑随 I-05 装配进行。
+- **影响范围：** 填充 `crates/gamestore-datamodel/`（`registry.rs` + `commands/{connectivity,string,hash,admin}.rs` +
+  `tests/{registry,string_commands,hash_commands,functional_parity}.rs`）；`Cargo.toml`/`Cargo.lock` 仅登记
+  既有 workspace 依赖（engine/protocol/bytes/tempfile），**未引入新外部依赖**；更新 [`README.md`](../README.md)
+  当前状态。**不改动既有设计文档结论与 `spike/`。**
+- **退出标准（已达成）：** `cargo fmt --check`/`cargo clippy --workspace --all-targets -D warnings`/
+  `cargo test --workspace`/`cargo build --workspace` 全绿；spike 32 项断言的等价 Rust 移植全部通过；
+  每个命令有正常/边界/错误路径（arity、WRONGTYPE、缺失 key、TTL 边界）单测覆盖。
+- **后续方向：** 按依赖图推进 **I-05（`gamestore-datanode`：单机服务装配）**——把 `CommandRegistry` 接入
+  DataNode 连接循环（`HELLO` 版本协商已有，`ExecCtx.version` 就绪）、加 `--config` 加载与 `FLUSHDB` 等
+  admin、优雅关闭，然后用 **真实 redis-py 跑 `spike/test/redis_functional_test.py`** 达成 Phase 1 退出标准
+  （标准 Redis 客户端零改造直连读写 Hash、重启不丢已落盘数据）。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-04；
+  MR-0015（I-02 协议层）/MR-0016（I-03 引擎层）；`spike/rust/src/commands.rs`；`spike/test/redis_functional_test.py`。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
