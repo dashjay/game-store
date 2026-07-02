@@ -16,7 +16,13 @@ data_dir = "./data"
 [logging]
 # Log level or full EnvFilter directive, e.g. "info" or "gamestore=debug,info".
 level = "info"
+# Commands slower than this many milliseconds go to the slow log (WARN on the
+# `gamestore::slowlog` target) and datanode_slow_commands_total. Redis default.
+slow_log_threshold_ms = 10
 
 [metrics]
-# Install the Prometheus recorder at startup (the /metrics HTTP endpoint is I-07).
+# Install the Prometheus recorder and serve the /metrics HTTP endpoint (I-07):
+#   curl http://127.0.0.1:9600/metrics
 enabled = true
+bind = "127.0.0.1"
+port = 9600

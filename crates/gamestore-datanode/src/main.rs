@@ -84,12 +84,21 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("warning: {e}");
     }
 
-    if cfg.metrics.enabled {
+    let metrics_handle = if cfg.metrics.enabled {
         match gamestore_common::metrics::init() {
-            Ok(_handle) => tracing::info!("prometheus metrics recorder installed"),
-            Err(e) => tracing::warn!(error = %e, "failed to install metrics recorder"),
+            Ok(handle) => {
+                gamestore_datanode::observability::describe_metrics();
+                tracing::info!("prometheus metrics recorder installed");
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to install metrics recorder");
+                None
+            }
         }
-    }
+    } else {
+        None
+    };
 
     // Open the store (one per DataNode; see the `Core` note in `server`). All
     // connections share it via Arc.
@@ -102,13 +111,39 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!(data_dir = %data_dir.display(), "store opened");
 
+    // The /metrics endpoint (I-07) runs alongside the RESP listener and stops
+    // with the process (it holds no state that needs draining).
+    if let Some(handle) = metrics_handle {
+        let metrics_addr = cfg.metrics.addr();
+        let metrics_listener = TcpListener::bind(&metrics_addr)
+            .await
+            .with_context(|| format!("binding /metrics listener on {metrics_addr}"))?;
+        tracing::info!(addr = %metrics_addr, "/metrics endpoint listening");
+        let metrics_store = store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = gamestore_datanode::serve_metrics(
+                metrics_listener,
+                handle,
+                metrics_store,
+                std::future::pending(),
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "/metrics endpoint stopped");
+            }
+        });
+    }
+
     let addr = cfg.server.addr();
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding RESP listener on {addr}"))?;
-    tracing::info!(%addr, "gamestore-datanode listening (I-05 single-node MVP)");
+    tracing::info!(%addr, "gamestore-datanode listening");
 
-    gamestore_datanode::serve(listener, store, shutdown_signal())
+    let options = gamestore_datanode::ServeOptions {
+        slow_log_threshold: std::time::Duration::from_millis(cfg.logging.slow_log_threshold_ms),
+    };
+    gamestore_datanode::serve_with(listener, store, options, shutdown_signal())
         .await
         .context("serving connections")?;
 

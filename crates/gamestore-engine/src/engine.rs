@@ -106,4 +106,14 @@ pub trait GeneralEngine: Send + Sync {
 
     /// Install (or replace) the GC predicate consulted by the compaction filter.
     fn install_gc(&self, predicate: Arc<dyn GcPredicate>);
+
+    /// Point-in-time engine statistics as `(metric_name, value)` gauges,
+    /// exported through the `/metrics` endpoint (I-07, aligned with
+    /// [`docs/design/08-observability-ops.md`] §1.2's engine metrics).
+    ///
+    /// Names must be valid Prometheus metric names. Backends without
+    /// introspection can keep the default empty implementation.
+    fn stats(&self) -> Vec<(&'static str, u64)> {
+        Vec::new()
+    }
 }

@@ -337,6 +337,8 @@ dependencies = [
  "gamestore-datamodel",
  "gamestore-engine",
  "gamestore-protocol",
+ "metrics",
+ "metrics-exporter-prometheus",
  "tempfile",
  "tokio",
  "tokio-util",

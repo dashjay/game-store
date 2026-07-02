@@ -43,6 +43,7 @@
 use std::future::Future;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
@@ -54,16 +55,29 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio_util::codec::Framed;
 
+use crate::observability;
+
 /// Monotonic connection-id source (`CLIENT ID`, `HELLO` reply `id` field).
 static NEXT_CONN_ID: AtomicI64 = AtomicI64::new(1);
 
-/// Serve connections on `listener` against `store` until `shutdown` resolves.
-///
-/// Each connection is handled on its own task; errors on individual
-/// connections are logged and do not stop the accept loop. On shutdown the
-/// accept loop stops, every open connection is signalled to finish its
-/// in-flight command and close, and `serve` waits for all of them to drain
-/// before returning (graceful shutdown).
+/// Tunables for [`serve_with`] (I-07).
+#[derive(Debug, Clone)]
+pub struct ServeOptions {
+    /// Commands at or above this duration are reported to the slow log and
+    /// counted in `datanode_slow_commands_total`.
+    pub slow_log_threshold: Duration,
+}
+
+impl Default for ServeOptions {
+    fn default() -> Self {
+        ServeOptions {
+            // Redis's `slowlog-log-slower-than` default (10'000 µs).
+            slow_log_threshold: Duration::from_millis(10),
+        }
+    }
+}
+
+/// [`serve_with`] using default [`ServeOptions`].
 pub async fn serve<E, S>(
     listener: TcpListener,
     store: Arc<Store<E>>,
@@ -73,7 +87,28 @@ where
     E: GeneralEngine + 'static,
     S: Future<Output = ()>,
 {
+    serve_with(listener, store, ServeOptions::default(), shutdown).await
+}
+
+/// Serve connections on `listener` against `store` until `shutdown` resolves.
+///
+/// Each connection is handled on its own task; errors on individual
+/// connections are logged and do not stop the accept loop. On shutdown the
+/// accept loop stops, every open connection is signalled to finish its
+/// in-flight command and close, and `serve` waits for all of them to drain
+/// before returning (graceful shutdown).
+pub async fn serve_with<E, S>(
+    listener: TcpListener,
+    store: Arc<Store<E>>,
+    options: ServeOptions,
+    shutdown: S,
+) -> std::io::Result<()>
+where
+    E: GeneralEngine + 'static,
+    S: Future<Output = ()>,
+{
     let registry = Arc::new(CommandRegistry::<E>::standard());
+    let options = Arc::new(options);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut connections = JoinSet::new();
 
@@ -91,11 +126,16 @@ where
                         tracing::debug!(%peer, "connection accepted");
                         let store = store.clone();
                         let registry = registry.clone();
+                        let options = options.clone();
                         let rx = shutdown_rx.clone();
                         connections.spawn(async move {
-                            if let Err(e) = handle_connection(stream, store, registry, rx).await {
+                            metrics::gauge!("datanode_conn_active").increment(1.0);
+                            if let Err(e) =
+                                handle_connection(stream, store, registry, options, rx).await
+                            {
                                 tracing::warn!(%peer, error = %e, "connection closed with error");
                             }
+                            metrics::gauge!("datanode_conn_active").decrement(1.0);
                         });
                     }
                     Err(e) => {
@@ -122,6 +162,7 @@ async fn handle_connection<E: GeneralEngine + 'static>(
     stream: TcpStream,
     store: Arc<Store<E>>,
     registry: Arc<CommandRegistry<E>>,
+    options: Arc<ServeOptions>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), gamestore_protocol::CodecError> {
     stream.set_nodelay(true).ok();
@@ -151,7 +192,14 @@ async fn handle_connection<E: GeneralEngine + 'static>(
             continue;
         }
 
+        let started = Instant::now();
         let action = dispatch(&args, framed.codec().version(), conn_id, &store, &registry);
+        observability::record_command(
+            command_label(&args[0], &registry),
+            &args,
+            started.elapsed(),
+            options.slow_log_threshold,
+        );
         // Switch the encoder *before* replying so e.g. `HELLO 3`'s own reply is
         // already RESP3.
         if let Some(v) = action.set_version {
@@ -163,6 +211,24 @@ async fn handle_connection<E: GeneralEngine + 'static>(
         }
     }
     Ok(())
+}
+
+/// Connection-scoped verbs handled by the DataNode layer itself (everything
+/// else known lives in the [`CommandRegistry`]).
+const CONNECTION_VERBS: &[&str] = &[
+    "HELLO", "QUIT", "CLIENT", "SELECT", "COMMAND", "FLUSHDB", "FLUSHALL",
+];
+
+/// The metric label for a command: its canonical uppercase name when it is a
+/// known command, `"UNKNOWN"` otherwise — arbitrary client input must never
+/// mint new label values (bounded cardinality).
+fn command_label<E: GeneralEngine + 'static>(raw: &Bytes, registry: &CommandRegistry<E>) -> String {
+    let upper = String::from_utf8_lossy(raw).to_ascii_uppercase();
+    if CONNECTION_VERBS.contains(&upper.as_str()) || registry.contains(raw) {
+        upper
+    } else {
+        "UNKNOWN".to_string()
+    }
 }
 
 /// The result of dispatching one command.
