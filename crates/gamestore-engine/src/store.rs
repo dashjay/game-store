@@ -375,4 +375,25 @@ impl<E: GeneralEngine> Store<E> {
     pub fn compact(&self) -> Result<()> {
         self.engine.compact_range(Some(Range::default()))
     }
+
+    /// `FLUSHDB` / `FLUSHALL`: delete **every** record (metadata and subkeys)
+    /// and clear the version map.
+    ///
+    /// Both record families are removed in one atomic batch so a crash cannot
+    /// leave metadata pointing at deleted subkeys (or vice versa). The version
+    /// map is cleared afterwards; even if a stale subkey survived (it cannot,
+    /// the batch is atomic), an empty version map marks it as orphaned garbage
+    /// for the compaction filter.
+    pub fn flush_all(&self) -> Result<()> {
+        let mut batch = WriteBatch::new();
+        for prefix in [encoding::META_PREFIX, encoding::SUBKEY_PREFIX] {
+            for item in self.engine.scan_prefix(&[prefix]) {
+                let (k, _) = item?;
+                batch.delete(k);
+            }
+        }
+        self.engine.write(batch)?;
+        self.versions.clear();
+        Ok(())
+    }
 }

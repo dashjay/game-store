@@ -1,13 +1,15 @@
 //! `gamestore-datanode` binary entry point.
 //!
-//! Loads configuration, initializes observability, binds the RESP listener and
-//! serves until Ctrl-C. Thin on purpose — the server logic lives in the library
-//! so it can be integration-tested.
+//! Loads configuration, initializes observability, opens the store and binds
+//! the RESP listener, then serves until Ctrl-C. Thin on purpose — the server
+//! logic lives in the library so it can be integration-tested.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use gamestore_common::Config;
+use gamestore_engine::{EngineConfig, Store};
 use tokio::net::TcpListener;
 
 /// Parsed command-line arguments.
@@ -15,6 +17,7 @@ struct Args {
     config: Option<PathBuf>,
     bind: Option<String>,
     port: Option<u16>,
+    data_dir: Option<PathBuf>,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -22,6 +25,7 @@ fn parse_args() -> anyhow::Result<Args> {
         config: None,
         bind: None,
         port: None,
+        data_dir: None,
     };
     let argv: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -39,10 +43,15 @@ fn parse_args() -> anyhow::Result<Args> {
                 args.port = Some(argv[i + 1].parse().context("invalid --port")?);
                 i += 2;
             }
+            "--data-dir" if i + 1 < argv.len() => {
+                args.data_dir = Some(PathBuf::from(&argv[i + 1]));
+                i += 2;
+            }
             "-h" | "--help" => {
                 println!(
-                    "gamestore-datanode [--config PATH] [--bind ADDR] [--port PORT]\n\n\
-                     RESP2/RESP3 server (I-02): PING/ECHO/HELLO/QUIT via gamestore-protocol."
+                    "gamestore-datanode [--config PATH] [--bind ADDR] [--port PORT] [--data-dir DIR]\n\n\
+                     Single-node GameStore DataNode (I-05): RESP2/RESP3 server with the\n\
+                     String/Hash/TTL command set persisted to RocksDB under --data-dir."
                 );
                 std::process::exit(0);
             }
@@ -66,6 +75,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(port) = args.port {
         cfg.server.port = port;
     }
+    if let Some(dir) = args.data_dir {
+        cfg.storage.data_dir = dir;
+    }
 
     // Initialize logging. A pre-installed subscriber (e.g. in tests) is not fatal.
     if let Err(e) = gamestore_common::telemetry::init(&cfg.logging.level) {
@@ -79,13 +91,24 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Open the store (one per DataNode; see the `Core` note in `server`). All
+    // connections share it via Arc.
+    let data_dir = cfg.storage.data_dir.clone();
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("creating data directory {}", data_dir.display()))?;
+    let store = Arc::new(
+        Store::open(&data_dir, &EngineConfig::default())
+            .with_context(|| format!("opening store at {}", data_dir.display()))?,
+    );
+    tracing::info!(data_dir = %data_dir.display(), "store opened");
+
     let addr = cfg.server.addr();
     let listener = TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding RESP listener on {addr}"))?;
-    tracing::info!(%addr, "gamestore-datanode listening (I-02: PING/ECHO/HELLO/QUIT)");
+    tracing::info!(%addr, "gamestore-datanode listening (I-05 single-node MVP)");
 
-    gamestore_datanode::serve(listener, shutdown_signal())
+    gamestore_datanode::serve(listener, store, shutdown_signal())
         .await
         .context("serving connections")?;
 

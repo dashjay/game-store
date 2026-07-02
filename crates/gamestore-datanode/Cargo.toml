@@ -1,6 +1,6 @@
 [package]
 name = "gamestore-datanode"
-description = "GameStore DataNode: minimal tokio RESP server (I-01), grows into the single-node MVP"
+description = "GameStore DataNode: single-node RESP2/RESP3 server over the command registry and RocksDB store (I-05)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,8 @@ path = "src/main.rs"
 [dependencies]
 gamestore-common = { workspace = true }
 gamestore-protocol = { workspace = true }
+gamestore-engine = { workspace = true }
+gamestore-datamodel = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
@@ -29,3 +31,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
+tempfile = { workspace = true }
