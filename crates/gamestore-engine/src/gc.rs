@@ -82,13 +82,15 @@ impl VersionMap {
     /// Compaction-filter predicate: should this raw record be kept?
     ///
     /// Metadata records are always kept here (their TTL/version lifecycle is
-    /// handled on the foreground path); only stale subkeys are dropped.
+    /// handled on the foreground path); only stale *versioned* records —
+    /// subkeys and ZSet score-index entries, which share the owner+version
+    /// key shape — are dropped.
     pub fn should_keep(&self, key: &[u8]) -> bool {
-        match encoding::parse_subkey(key) {
-            None => true, // not a subkey (e.g. metadata) -> keep
-            Some((user_key, version, _field)) => match self.get(user_key) {
+        match encoding::parse_owner_version(key) {
+            None => true, // not a versioned record (e.g. metadata) -> keep
+            Some((user_key, version)) => match self.get(user_key) {
                 Some(current) => version == current,
-                None => false, // owner deleted -> subkey is garbage
+                None => false, // owner deleted -> record is garbage
             },
         }
     }
@@ -122,6 +124,20 @@ mod tests {
         assert!(vm.should_keep(&current), "current version kept");
         assert!(!vm.should_keep(&stale), "stale version dropped");
         assert!(!vm.should_keep(&orphan), "orphan (unknown owner) dropped");
+    }
+
+    #[test]
+    fn zscore_index_records_follow_the_same_lifecycle() {
+        let vm = VersionMap::new();
+        vm.set(b"lb", 5);
+
+        let current = encoding::zscore_key(b"lb", 5, 1.5, b"m");
+        let stale = encoding::zscore_key(b"lb", 4, 1.5, b"m");
+        let orphan = encoding::zscore_key(b"gone", 1, 1.5, b"m");
+
+        assert!(vm.should_keep(&current), "current score index kept");
+        assert!(!vm.should_keep(&stale), "stale score index dropped");
+        assert!(!vm.should_keep(&orphan), "orphan score index dropped");
     }
 
     #[test]

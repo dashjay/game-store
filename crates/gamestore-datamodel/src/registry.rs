@@ -83,9 +83,9 @@ impl<E: GeneralEngine + 'static> CommandRegistry<E> {
         }
     }
 
-    /// The full I-04 command set: connectivity (`PING`/`ECHO`), String + TTL,
-    /// Hash, and the `DBSIZE`/`RAWCOUNT`/`COMPACT` introspection commands used
-    /// by the consistency tests.
+    /// The full standard command set: connectivity (`PING`/`ECHO`), String +
+    /// TTL, Hash (I-04), Set/ZSet/List (I-06), and the `DBSIZE`/`RAWCOUNT`/
+    /// `COMPACT` introspection commands used by the consistency tests.
     pub fn standard() -> Self {
         let mut reg = CommandRegistry::new();
         crate::commands::register_all(&mut reg);

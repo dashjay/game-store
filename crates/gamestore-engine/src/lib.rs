@@ -30,7 +30,10 @@ pub mod gc;
 pub mod rocks;
 pub mod store;
 
-pub use encoding::{Meta, META_PREFIX, SUBKEY_PREFIX, TYPE_HASH, TYPE_STRING};
+pub use encoding::{
+    Meta, META_PREFIX, SUBKEY_PREFIX, TYPE_HASH, TYPE_LIST, TYPE_SET, TYPE_STRING, TYPE_ZSET,
+    ZSCORE_PREFIX,
+};
 pub use engine::{GcPredicate, GeneralEngine, Range, ScanItem, WriteBatch, WriteOp};
 pub use error::{EngineError, Result};
 pub use gc::VersionMap;

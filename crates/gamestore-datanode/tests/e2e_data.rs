@@ -98,9 +98,9 @@ async fn string_and_hash_commands_over_tcp() {
     assert!(reply.starts_with(b"-WRONGTYPE"), "got {reply:?}");
 
     // Unknown commands use the canonical wording.
-    let reply = call(&mut c, &["LPUSH", "l", "x"]).await;
+    let reply = call(&mut c, &["GEOADD", "g", "1", "2", "m"]).await;
     assert!(
-        reply.starts_with(b"-ERR unknown command 'LPUSH'"),
+        reply.starts_with(b"-ERR unknown command 'GEOADD'"),
         "got {reply:?}"
     );
 
@@ -135,6 +135,64 @@ async fn hgetall_is_map_on_resp3_and_flat_array_on_resp2() {
     server.shutdown().await;
 }
 
+/// I-06: the Set/ZSet/List families round-trip over the wire, including the
+/// version-aware reply shapes.
+#[tokio::test]
+async fn composite_type_commands_over_tcp() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let server = start_server(dir.path()).await;
+    let mut c = TcpStream::connect(server.addr).await.unwrap();
+
+    // Set.
+    assert_eq!(call(&mut c, &["SADD", "s", "a", "b", "a"]).await, b":2\r\n");
+    assert_eq!(call(&mut c, &["SISMEMBER", "s", "a"]).await, b":1\r\n");
+    assert_eq!(call(&mut c, &["SCARD", "s"]).await, b":2\r\n");
+    assert_eq!(call(&mut c, &["TYPE", "s"]).await, b"+set\r\n");
+
+    // ZSet: score-ordered ranges, RESP2 bulk scores.
+    assert_eq!(
+        call(&mut c, &["ZADD", "z", "2", "b", "1", "a"]).await,
+        b":2\r\n"
+    );
+    assert_eq!(
+        call(&mut c, &["ZRANGE", "z", "0", "-1", "WITHSCORES"]).await,
+        b"*4\r\n$1\r\na\r\n$1\r\n1\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        call(&mut c, &["ZRANGEBYSCORE", "z", "(1", "+inf"]).await,
+        b"*1\r\n$1\r\nb\r\n"
+    );
+    assert_eq!(call(&mut c, &["ZSCORE", "z", "a"]).await, b"$1\r\n1\r\n");
+
+    // List.
+    assert_eq!(call(&mut c, &["RPUSH", "l", "x", "y"]).await, b":2\r\n");
+    assert_eq!(call(&mut c, &["LPUSH", "l", "w"]).await, b":3\r\n");
+    assert_eq!(
+        call(&mut c, &["LRANGE", "l", "0", "-1"]).await,
+        b"*3\r\n$1\r\nw\r\n$1\r\nx\r\n$1\r\ny\r\n"
+    );
+    assert_eq!(call(&mut c, &["LPOP", "l"]).await, b"$1\r\nw\r\n");
+    assert_eq!(
+        call(&mut c, &["RPOP", "l", "2"]).await,
+        b"*2\r\n$1\r\ny\r\n$1\r\nx\r\n"
+    );
+    assert_eq!(call(&mut c, &["LPOP", "l"]).await, b"$-1\r\n");
+
+    // WRONGTYPE propagates for the new families.
+    let reply = call(&mut c, &["LPUSH", "s", "v"]).await;
+    assert!(reply.starts_with(b"-WRONGTYPE"), "got {reply:?}");
+
+    // RESP3 shapes: SMEMBERS is a native set, ZSCORE a native double.
+    let mut c3 = TcpStream::connect(server.addr).await.unwrap();
+    let hello = call(&mut c3, &["HELLO", "3"]).await;
+    assert!(hello.starts_with(b"%"), "got {hello:?}");
+    let smembers = call(&mut c3, &["SMEMBERS", "s"]).await;
+    assert!(smembers.starts_with(b"~2\r\n"), "got {smembers:?}");
+    assert_eq!(call(&mut c3, &["ZSCORE", "z", "a"]).await, b",1\r\n");
+
+    server.shutdown().await;
+}
+
 /// Phase-1 exit criterion: data persisted before a full server + store restart
 /// is still readable afterwards.
 #[tokio::test]
@@ -149,6 +207,9 @@ async fn restart_preserves_persisted_data() {
             call(&mut c, &["HSET", "player:1", "gold", "100", "hp", "42"]).await,
             b":2\r\n"
         );
+        assert_eq!(call(&mut c, &["SADD", "guild", "alice"]).await, b":1\r\n");
+        assert_eq!(call(&mut c, &["ZADD", "lb", "9", "alice"]).await, b":1\r\n");
+        assert_eq!(call(&mut c, &["RPUSH", "log", "e1", "e2"]).await, b":2\r\n");
         drop(c);
         // Graceful shutdown closes the store (Arc dropped when serve returns).
         server.shutdown().await;
@@ -163,7 +224,19 @@ async fn restart_preserves_persisted_data() {
             b"$3\r\n100\r\n"
         );
         assert_eq!(call(&mut c, &["HLEN", "player:1"]).await, b":2\r\n");
-        assert_eq!(call(&mut c, &["DBSIZE"]).await, b":2\r\n");
+        assert_eq!(
+            call(&mut c, &["SISMEMBER", "guild", "alice"]).await,
+            b":1\r\n"
+        );
+        assert_eq!(
+            call(&mut c, &["ZSCORE", "lb", "alice"]).await,
+            b"$1\r\n9\r\n"
+        );
+        assert_eq!(
+            call(&mut c, &["LRANGE", "log", "0", "-1"]).await,
+            b"*2\r\n$2\r\ne1\r\n$2\r\ne2\r\n"
+        );
+        assert_eq!(call(&mut c, &["DBSIZE"]).await, b":5\r\n");
         server.shutdown().await;
     }
 }

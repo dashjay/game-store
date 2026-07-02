@@ -21,8 +21,11 @@ fn command_names_are_case_insensitive() {
 #[test]
 fn unknown_command_is_reported_with_original_spelling() {
     let db = TestDb::new();
-    let msg = assert_err_prefix(db.exec(&["ZADD", "k", "1", "m"]), "ERR unknown command");
-    assert!(msg.contains("'ZADD'"), "got {msg:?}");
+    let msg = assert_err_prefix(
+        db.exec(&["GeoAdd", "k", "1", "2", "m"]),
+        "ERR unknown command",
+    );
+    assert!(msg.contains("'GeoAdd'"), "got {msg:?}");
 }
 
 #[test]
@@ -57,7 +60,8 @@ fn contains_is_case_insensitive() {
     assert!(db.registry.contains(b"get"));
     assert!(db.registry.contains(b"GET"));
     assert!(db.registry.contains(b"HGetAll"));
-    assert!(!db.registry.contains(b"ZADD"));
+    assert!(db.registry.contains(b"zAdd"));
+    assert!(!db.registry.contains(b"GEOADD"));
 }
 
 #[test]
