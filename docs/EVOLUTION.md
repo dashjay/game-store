@@ -361,6 +361,51 @@
   建 `CommandRegistry` 与 String/Hash 命令，复用 spike 的 `redis_functional_test.py` 兼容性用例。
 - **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-02；MR-0014（I-01）；`spike/rust/src/resp.rs`。
 
+### MR-0016 · I-03：`gamestore-engine` 通用引擎 + 编码 + Compaction GC
+- **日期：** 2026-07-02
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-03 定义实现）
+- **动机：** MR-0014（I-01）搭好 workspace 骨架、MR-0015（I-02）落地协议层后，`gamestore-engine`
+  仍是空壳。进入 I-03，需要把 spike 的 `encoding.rs`/`gc.rs`/`storage.rs` **提升、加固并迁移** 为
+  一个可独立压测/评审的 **通用引擎层**：抽象出 `GeneralEngine`、用 `rust-rocksdb` 落地、实现
+  "元数据键 + 子键 + 结构 version" 编码与 **Compaction Filter 后台 GC**，并提供内省能力供后续一致性用例验证。
+  范围严格限定在引擎层，不越界实现命令注册表/命令层（I-04）与服务装配（I-05）。
+- **关键决策：**
+  - **`GeneralEngine` 抽象（plan §2.3）：** 定义 backend 无关的最小 KV 面
+    （`get` / `write(WriteBatch)` 组提交 / `scan_prefix` / `compact_range` / `install_gc`），
+    令上层编码/version/GC 逻辑与具体引擎解耦，为后续 LSH 引擎（§7）预留可替换点。`WriteBatch`/`Range`/`GcPredicate`
+    均为自有类型，调用方不直接依赖 RocksDB 类型。
+  - **RocksDB 实现（`RocksEngine`）：** 用 `rocksdb` crate（bundled，TiKV 同款，spike 已验证）。
+    因 RocksDB 要求 **Compaction Filter 在 open 时注册**，采用 **trampoline + 可替换槽**：open 时装一个固定 filter，
+    它读取共享的 `RwLock<Option<Arc<dyn GcPredicate>>>`；`install_gc` 只是往槽里换 predicate，
+    未安装时"全部保留"（退化为普通 KV）。`compact_range` 先 `flush` 再强制 bottommost，保证 filter 真正运行、垃圾被物理回收。
+  - **编码逐字节沿用 spike：** `encoding.rs` 保持与 spike/C++ 一致的磁盘布局（`META_PREFIX`/`SUBKEY_PREFIX`、
+    `[type][version BE][expire_ms BE][payload]`、`subkey=[prefix][u32 keylen][key][u64 version][field]`）。
+  - **版本表 GC（`VersionMap`）：** 内存 `key -> 当前 version` 映射实现 `GcPredicate`；filter 判定
+    "子键的 version == 属主当前 version 才保留"，属主被删/version 落后即回收；启动时扫描全部元数据 **重建** version 表。
+  - **`Store<E: GeneralEngine>`（移植加固 storage.rs）：** 泛型于引擎（便于测试/压测/未来替换）；
+    所有操作返回 `Result`（不再 `.expect()` panic）；类型不匹配返回 Redis 风格 `WRONGTYPE`（`EngineError::WrongType`）；
+    实现 String（`SET/GET` + 惰性过期/TTL）与 Hash（`HSET/HGET/HGETALL/HDEL/HLEN/HEXISTS`）及 `DEL/EXISTS/TYPE/EXPIRE/PTTL`
+    的 O(1) 逻辑删除；写路径用 `WriteBatch` 组提交。
+  - **调优配置位（不调优）：** `EngineConfig` 暴露 Bloom bits / Block Cache 容量 / write buffer / 后台 I/O 限速
+    （对齐 `03-storage-engine.md` §5），给出合理默认值，实际调参留待后续结合压测。
+  - **内省能力：** `RAWCOUNT`（子键物理条数）/ `DBSIZE`（元数据条数）/ `COMPACT`（强制合并触发 GC），供一致性用例验证回收。
+  - **错误分层：** 引擎自带 `EngineError`（`Backend`/`Corruption`/`WrongType`，`#[non_exhaustive]`）+
+    `From<rocksdb::Error>` 与 `From<EngineError> for gamestore_common::Error`。
+  - **工具链坑：** 在仓库根新增 `.cargo/config.toml`，把 `CC/CXX/linker` 钉到 gcc/g++
+    （本镜像默认 clang 编译 bundled RocksDB 缺 libstdc++，与 spike 同因），供全 workspace 一致构建；
+    dev 依赖 `tempfile` 钉到 `=3.14.0`（更高版本经 `getrandom 0.4` 拉入未稳定的 `edition2024`，与固定的 Rust 1.83 冲突，同 MR-0015 口径）。
+- **影响范围：** 重写 `crates/gamestore-engine/`（新增 `engine.rs`/`rocks.rs`/`encoding.rs`/`gc.rs`/`store.rs`/`error.rs` +
+  `tests/encoding_props.rs`(proptest) + `tests/store_rocksdb.rs`）；根 `Cargo.toml` 新增 `rocksdb` 公共依赖与 `tempfile` dev 依赖；
+  新增仓库根 `.cargo/config.toml`；更新 `Cargo.lock`；更新 [`README.md`](../README.md) 当前状态。**不改动既有设计文档结论与 `spike/`。**
+- **退出标准（已达成）：** `cargo fmt --check`/`cargo clippy -D warnings`/`cargo test`/`cargo build` 全绿；
+  引擎层 11 单测 + 3 属性测试（编码 round-trip、subkey round-trip、任意字节 `parse_subkey` 不 panic）
+  + 8 个 RocksDB 集成测试通过：**GC 单测**（100 子键经 `DEL`+`COMPACT` 回收到 0；新 version 重建后只见新数据、旧 version 不泄漏）、
+  **重启后 version 表正确重建**（重开后 Hash 仍按当前 version 解析、GC 依旧生效）、String/Hash 语义与 `WRONGTYPE` 行为。
+- **后续方向：** 按依赖图推进 **I-04（`gamestore-datamodel`：String + Hash + TTL）**——在本引擎之上建
+  `CommandRegistry`、做参数/arity 校验与 Redis 一致的错误信息、复用 spike 的 `redis_functional_test.py` 兼容性用例。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-03；MR-0014（I-01）/MR-0015（I-02）；
+  `spike/rust/src/{encoding,gc,storage}.rs`；`spike/rust/.cargo/config.toml`。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
