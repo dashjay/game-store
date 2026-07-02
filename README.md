@@ -84,6 +84,8 @@
 我们按"**一个 item 一个 MR**"顺序推进。已落地：`I-01`（Cargo workspace 与工程基线，MR-0014）、
 `I-02`（`gamestore-protocol`：RESP2/RESP3 sans-IO 编解码 + tokio `Framed` 适配，DataNode 接入并支持 `HELLO` 握手，MR-0015）、
 `I-03`（`gamestore-engine`：`GeneralEngine` 抽象 + RocksDB 实现 + "元数据键 + 子键 + 结构 version" 编码 +
-Compaction Filter 后台 GC + `RAWCOUNT/DBSIZE/COMPACT` 内省，MR-0016）。
-下一个为 `I-04`（`gamestore-datamodel`：String + Hash + TTL 命令层）。
+Compaction Filter 后台 GC + `RAWCOUNT/DBSIZE/COMPACT` 内省，MR-0016）、
+`I-04`（`gamestore-datamodel`：`CommandRegistry` + String/Hash/TTL 命令层，Redis 一致的 arity/错误口径，
+RESP3 版本感知回复，spike 兼容性用例 32 项断言的 Rust 移植，MR-0017）。
+下一个为 `I-05`（`gamestore-datanode`：单机服务装配，把命令层接入连接循环并达成 Phase 1 退出标准）。
 能力里程碑与阶段划分见 [`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)。
