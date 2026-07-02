@@ -5,7 +5,9 @@ use gamestore_engine::GeneralEngine;
 
 use crate::registry::CommandRegistry;
 
+pub mod admin;
 pub mod connectivity;
+pub mod hash;
 pub mod string;
 
 /// Register every I-04 command family (connectivity, String + TTL, Hash,
@@ -13,4 +15,6 @@ pub mod string;
 pub fn register_all<E: GeneralEngine + 'static>(reg: &mut CommandRegistry<E>) {
     connectivity::register(reg);
     string::register(reg);
+    hash::register(reg);
+    admin::register(reg);
 }
