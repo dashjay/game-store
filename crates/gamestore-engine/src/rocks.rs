@@ -163,6 +163,52 @@ impl GeneralEngine for RocksEngine {
     fn install_gc(&self, predicate: Arc<dyn GcPredicate>) {
         *self.gc.write().expect("gc slot poisoned") = Some(predicate);
     }
+
+    /// RocksDB properties exported as gauges, chosen to cover the engine
+    /// signals of [`docs/design/08-observability-ops.md`] §1.2: block-cache
+    /// usage, write-stall state, memtable/compaction pressure and on-disk
+    /// footprint. Missing properties are silently skipped.
+    fn stats(&self) -> Vec<(&'static str, u64)> {
+        const PROPS: &[(&str, &str)] = &[
+            ("rocksdb_estimate_num_keys", "rocksdb.estimate-num-keys"),
+            (
+                "rocksdb_block_cache_usage_bytes",
+                "rocksdb.block-cache-usage",
+            ),
+            (
+                "rocksdb_cur_size_all_mem_tables_bytes",
+                "rocksdb.cur-size-all-mem-tables",
+            ),
+            (
+                "rocksdb_total_sst_files_size_bytes",
+                "rocksdb.total-sst-files-size",
+            ),
+            (
+                "rocksdb_estimate_pending_compaction_bytes",
+                "rocksdb.estimate-pending-compaction-bytes",
+            ),
+            (
+                "rocksdb_num_running_compactions",
+                "rocksdb.num-running-compactions",
+            ),
+            ("rocksdb_num_running_flushes", "rocksdb.num-running-flushes"),
+            (
+                "rocksdb_actual_delayed_write_rate",
+                "rocksdb.actual-delayed-write-rate",
+            ),
+            ("rocksdb_is_write_stopped", "rocksdb.is-write-stopped"),
+        ];
+        PROPS
+            .iter()
+            .filter_map(|(name, prop)| {
+                self.db
+                    .property_int_value(*prop)
+                    .ok()
+                    .flatten()
+                    .map(|v| (*name, v))
+            })
+            .collect()
+    }
 }
 
 /// Iterator adapter that stops once keys leave `prefix`.

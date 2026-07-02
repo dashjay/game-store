@@ -28,6 +28,8 @@ futures = { workspace = true }
 bytes = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }

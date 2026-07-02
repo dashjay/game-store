@@ -78,12 +78,17 @@ impl Default for StorageConfig {
 pub struct LoggingConfig {
     /// Default log level / `EnvFilter` directive (e.g. `info`, `gamestore=debug`).
     pub level: String,
+    /// Commands slower than this many milliseconds are reported to the slow
+    /// log (I-07, Redis-style; `slowlog-log-slower-than` defaults to 10ms).
+    /// `0` logs every command; `u64::MAX` effectively disables it.
+    pub slow_log_threshold_ms: u64,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         LoggingConfig {
             level: "info".to_string(),
+            slow_log_threshold_ms: 10,
         }
     }
 }
@@ -92,13 +97,29 @@ impl Default for LoggingConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MetricsConfig {
-    /// Whether to install the Prometheus recorder at startup.
+    /// Whether to install the Prometheus recorder (and serve `/metrics`)
+    /// at startup.
     pub enabled: bool,
+    /// Bind address for the `/metrics` HTTP listener (I-07).
+    pub bind: String,
+    /// TCP port for the `/metrics` HTTP listener.
+    pub port: u16,
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
-        MetricsConfig { enabled: true }
+        MetricsConfig {
+            enabled: true,
+            bind: "127.0.0.1".to_string(),
+            port: 9600,
+        }
+    }
+}
+
+impl MetricsConfig {
+    /// `bind:port` string suitable for `TcpListener::bind`.
+    pub fn addr(&self) -> String {
+        format!("{}:{}", self.bind, self.port)
     }
 }
 
@@ -134,8 +155,9 @@ impl Config {
     /// Recognised keys (nested via `__`):
     /// - `GAMESTORE_SERVER__BIND`, `GAMESTORE_SERVER__PORT`
     /// - `GAMESTORE_STORAGE__DATA_DIR`
-    /// - `GAMESTORE_LOGGING__LEVEL`
-    /// - `GAMESTORE_METRICS__ENABLED`
+    /// - `GAMESTORE_LOGGING__LEVEL`, `GAMESTORE_LOGGING__SLOW_LOG_THRESHOLD_MS`
+    /// - `GAMESTORE_METRICS__ENABLED`, `GAMESTORE_METRICS__BIND`,
+    ///   `GAMESTORE_METRICS__PORT`
     fn apply_env_overrides(&mut self) {
         if let Some(v) = env_var("SERVER__BIND") {
             self.server.bind = v;
@@ -151,9 +173,22 @@ impl Config {
         if let Some(v) = env_var("LOGGING__LEVEL") {
             self.logging.level = v;
         }
+        if let Some(v) = env_var("LOGGING__SLOW_LOG_THRESHOLD_MS") {
+            if let Ok(ms) = v.parse() {
+                self.logging.slow_log_threshold_ms = ms;
+            }
+        }
         if let Some(v) = env_var("METRICS__ENABLED") {
             if let Ok(enabled) = v.parse() {
                 self.metrics.enabled = enabled;
+            }
+        }
+        if let Some(v) = env_var("METRICS__BIND") {
+            self.metrics.bind = v;
+        }
+        if let Some(v) = env_var("METRICS__PORT") {
+            if let Ok(port) = v.parse() {
+                self.metrics.port = port;
             }
         }
     }
@@ -178,7 +213,18 @@ mod tests {
         assert_eq!(cfg.server.addr(), "127.0.0.1:6380");
         assert_eq!(cfg.storage.data_dir, PathBuf::from("./data"));
         assert_eq!(cfg.logging.level, "info");
+        assert_eq!(cfg.logging.slow_log_threshold_ms, 10);
         assert!(cfg.metrics.enabled);
+        assert_eq!(cfg.metrics.addr(), "127.0.0.1:9600");
+    }
+
+    #[test]
+    fn parses_metrics_and_slowlog_settings() {
+        let cfg =
+            Config::from_toml("[metrics]\nport = 9900\n\n[logging]\nslow_log_threshold_ms = 50\n")
+                .unwrap();
+        assert_eq!(cfg.metrics.addr(), "127.0.0.1:9900");
+        assert_eq!(cfg.logging.slow_log_threshold_ms, 50);
     }
 
     #[test]

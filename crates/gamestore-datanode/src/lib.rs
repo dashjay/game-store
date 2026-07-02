@@ -7,11 +7,15 @@
 //! dispatches every data command through the
 //! [`gamestore_datamodel::CommandRegistry`], keeping only connection-scoped
 //! commands (`HELLO`/`QUIT` + `CLIENT`/`SELECT`/`COMMAND` housekeeping) and
-//! database admin (`FLUSHDB`/`FLUSHALL`) in this layer. Later MRs turn it into
-//! the multi-replica, WAL-backed DataNode described in
+//! database admin (`FLUSHDB`/`FLUSHALL`) in this layer. **I-07** added
+//! observability: per-command metrics + slow log in the connection loop and a
+//! Prometheus `/metrics` HTTP endpoint ([`observability`]). Later MRs turn it
+//! into the multi-replica, WAL-backed DataNode described in
 //! `docs/design/02-architecture.md` §3.2 (see the `Core` note in [`server`]).
 #![forbid(unsafe_code)]
 
+pub mod observability;
 pub mod server;
 
-pub use server::serve;
+pub use observability::serve_metrics;
+pub use server::{serve, serve_with, ServeOptions};

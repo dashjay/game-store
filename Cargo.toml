@@ -56,6 +56,14 @@ futures = "0.3"
 # not-yet-stable `edition2024` and fails on our pinned Rust 1.83 toolchain
 # (same constraint recorded for proptest in MR-0015).
 tempfile = "=3.14.0"
+# Micro-benchmarks (I-07), dev-only. Default features disabled: we don't need
+# HTML/plotters reports, and fewer transitive deps means less exposure to the
+# edition2024 incompatibilities on the pinned Rust 1.83 toolchain. Even so,
+# criterion's transitive `clap` had to be pinned in Cargo.lock
+# (`cargo update -p clap --precise 4.5.23`): clap >= 4.6 pulls clap_lex 1.x,
+# which requires the not-yet-stable `edition2024` (same class of pin as
+# proptest/tempfile above, recorded in MR-0020).
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 # Internal workspace crates.
 gamestore-common = { path = "crates/gamestore-common", version = "0.1.0" }
 gamestore-protocol = { path = "crates/gamestore-protocol", version = "0.1.0" }
