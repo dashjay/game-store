@@ -1,11 +1,17 @@
 # Example GameStore DataNode configuration.
 # Run with: cargo run -p gamestore-datanode -- --config config/datanode.example.toml
-# Any field may also be overridden via env (e.g. GAMESTORE_SERVER__PORT=7000)
-# or CLI flags (--bind / --port).
+# Any field may also be overridden via env (e.g. GAMESTORE_SERVER__PORT=7000,
+# GAMESTORE_STORAGE__DATA_DIR=/var/lib/gamestore) or CLI flags
+# (--bind / --port / --data-dir).
 
 [server]
 bind = "127.0.0.1"
 port = 6380
+
+[storage]
+# Directory holding the persistent data (RocksDB). Created on startup if
+# missing. Data written here survives process restarts.
+data_dir = "./data"
 
 [logging]
 # Log level or full EnvFilter directive, e.g. "info" or "gamestore=debug,info".

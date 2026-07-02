@@ -5,7 +5,7 @@
 //! logging/metrics. Later MRs extend these structs (engine tuning, replica
 //! topology, quorum, …) without changing the loading mechanism.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,8 @@ const ENV_PREFIX: &str = "GAMESTORE_";
 pub struct Config {
     /// Network listener settings.
     pub server: ServerConfig,
+    /// Storage engine settings (data directory).
+    pub storage: StorageConfig,
     /// Structured logging settings.
     pub logging: LoggingConfig,
     /// Metrics exporter settings.
@@ -50,6 +52,23 @@ impl ServerConfig {
     /// `bind:port` string suitable for `TcpListener::bind`.
     pub fn addr(&self) -> String {
         format!("{}:{}", self.bind, self.port)
+    }
+}
+
+/// Storage engine configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageConfig {
+    /// Directory holding the persistent data (the RocksDB instance). Created
+    /// on startup if missing.
+    pub data_dir: PathBuf,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        StorageConfig {
+            data_dir: PathBuf::from("./data"),
+        }
     }
 }
 
@@ -114,6 +133,7 @@ impl Config {
     ///
     /// Recognised keys (nested via `__`):
     /// - `GAMESTORE_SERVER__BIND`, `GAMESTORE_SERVER__PORT`
+    /// - `GAMESTORE_STORAGE__DATA_DIR`
     /// - `GAMESTORE_LOGGING__LEVEL`
     /// - `GAMESTORE_METRICS__ENABLED`
     fn apply_env_overrides(&mut self) {
@@ -124,6 +144,9 @@ impl Config {
             if let Ok(port) = v.parse() {
                 self.server.port = port;
             }
+        }
+        if let Some(v) = env_var("STORAGE__DATA_DIR") {
+            self.storage.data_dir = PathBuf::from(v);
         }
         if let Some(v) = env_var("LOGGING__LEVEL") {
             self.logging.level = v;
@@ -153,6 +176,7 @@ mod tests {
         assert_eq!(cfg.server.bind, "127.0.0.1");
         assert_eq!(cfg.server.port, 6380);
         assert_eq!(cfg.server.addr(), "127.0.0.1:6380");
+        assert_eq!(cfg.storage.data_dir, PathBuf::from("./data"));
         assert_eq!(cfg.logging.level, "info");
         assert!(cfg.metrics.enabled);
     }
@@ -163,7 +187,14 @@ mod tests {
         assert_eq!(cfg.server.port, 7000);
         // Untouched fields keep their defaults.
         assert_eq!(cfg.server.bind, "127.0.0.1");
+        assert_eq!(cfg.storage.data_dir, PathBuf::from("./data"));
         assert!(cfg.metrics.enabled);
+    }
+
+    #[test]
+    fn parses_storage_section() {
+        let cfg = Config::from_toml("[storage]\ndata_dir = \"/var/lib/gamestore\"\n").unwrap();
+        assert_eq!(cfg.storage.data_dir, PathBuf::from("/var/lib/gamestore"));
     }
 
     #[test]
