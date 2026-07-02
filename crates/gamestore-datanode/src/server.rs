@@ -24,8 +24,12 @@
 //! (unbounded, cold) blocking pool. The multi-threaded runtime keeps other
 //! connections progressing on their own workers. The one genuinely long call
 //! (`COMPACT`) is a test/admin introspection verb, not a hot-path command.
-//! This is re-evaluated with real numbers in I-07 (benchmarks) and revisited
-//! anyway when the WAL lands in I-08.
+//! **Re-reviewed in I-07 with benchmark data and upheld** (see
+//! `docs/benchmarks/2026-07-02-i07-baseline.md` §3): hot-path commands
+//! execute in 0.4–7.4 µs, the same order as a `spawn_blocking` handoff
+//! itself; the heaviest range command stays ~100 µs. Revisit when a hot-path
+//! command reaches millisecond scale or when the WAL (I-08) puts fsync on the
+//! foreground write path.
 //!
 //! # `Core` as a logical unit (reservation, not implemented)
 //!

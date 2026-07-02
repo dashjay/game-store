@@ -17,3 +17,8 @@ bytes = { workspace = true }
 # Fresh RocksDB-backed stores for the integration tests (GC / compaction
 # assertions need the real engine); unit tests run on the in-crate MemEngine.
 tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "commands"
+harness = false
