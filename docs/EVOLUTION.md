@@ -320,6 +320,47 @@
   逐步把 `spike/rust/` 的模块提升/迁移到对应 crate（磁盘编码保持逐字节一致）。
 - **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-01；MR-0013；`spike/rust/`。
 
+### MR-0015 · I-02：`gamestore-protocol` RESP2/RESP3 编解码
+- **日期：** 2026-07-01
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-02 定义实现）
+- **动机：** MR-0014（I-01）落地了 workspace 骨架，`gamestore-protocol` 当时仅为空壳，`gamestore-datanode`
+  内嵌了一个 I-01 自带的极小 RESP 解析器。进入 I-02，需要把 spike 的 `resp.rs` 提升为 **健壮、可独立测试的 sans-IO
+  RESP2/RESP3 编解码器**，作为接入层的稳定地基，并让 DataNode 改用它（对齐 I-01 里"I-02 起改用 gamestore-protocol"的约定）。
+  范围严格限定在协议层与最小接入改造，不越界实现命令注册表/引擎（那是 I-03/I-04/I-05）。
+- **关键决策：**
+  - **sans-IO 核心 + tokio 适配分离：** 解析/序列化逻辑（[`decode`]/[`encode`]/[`frame`]）不依赖任何 I/O，
+    可用纯单元 + 属性测试穷举；tokio 依赖只集中在 [`codec`] 一处（`tokio_util::codec::{Decoder,Encoder}`）。
+    这样协议层既能被 DataNode 用 `Framed` 驱动，也能被未来的 Proxy/SDK/测试直接复用。
+  - **增量（streaming）解码：** `decode`/`decode_command` 在数据不足时返回 `Ok(None)` 且 **不消费任何字节**，
+    从而 **透明处理分片读**（一个 frame 跨多个 TCP 段）；完整时才 `split_to` 推进缓冲区。
+  - **统一值模型 `Frame`（RESP2 ∪ RESP3）：** 覆盖 RESP2（simple/error/integer/bulk/array，含 null bulk/null array）
+    与 RESP3（`_` null、boolean、double(含 inf/-inf/nan)、big number、bulk error、verbatim、map、set、push）。
+    null 采用 **规范化 + 版本感知编码**：解码 `$-1`/`*-1`/`_` 统一为 `Frame::Null`，编码时按 `RespVersion`
+    选择 RESP2 的 `$-1\r\n` 或 RESP3 的 `_\r\n`。
+  - **请求解析（`decode_command`）：** 同时支持 **RESP 多 bulk 数组** 与 **inline 命令**；inline 分词对齐 Redis
+    `sdssplitargs`（单/双引号、`\xHH` 与 `\n\r\t\b\a\"\'` 转义、引号不闭合报错）。
+  - **边界与抗滥用：** 引入 `Limits`（`max_bulk_len` 512MiB、`max_array_len` 1M、`max_inline_len` 64KiB、
+    `max_depth` 128，口径对齐 Redis），对超限长度/过深嵌套返回明确错误，避免恶意输入触发无界分配/栈溢出。
+  - **错误分层：** 协议层自带可匹配的 `ProtocolError`（`Malformed`/`LimitExceeded`/`InlineSyntax`，`#[non_exhaustive]`）
+    并提供 `From<ProtocolError> for gamestore_common::Error`；tokio 适配层额外用 `CodecError` 聚合 I/O 错误
+    （满足 `Decoder::Error: From<io::Error>`）。
+  - **DataNode 接入改造：** 删除 `gamestore-datanode/src/resp.rs`，连接循环改用 `Framed<TcpStream, CommandCodec>`；
+    新增 **`HELLO [protover]` 握手**：按请求切换每连接协议版本（2/3），回复标准 server-info（RESP3 用 map、RESP2 用扁平数组），
+    未知版本回 `NOPROTO`。命令面仍限握手/存活子集 `PING/ECHO/HELLO/QUIT`，未知命令显式报错。
+  - **工具链兼容：** dev 依赖 `proptest` 钉到 `=1.5.0`（更高版本经 rand 0.9 拉入 `getrandom 0.4`，需未稳定的
+    `edition2024`，与固定的 Rust 1.83 冲突）；连带把 `tempfile` 钉到 `3.14.0`（新版同样拉入 `getrandom 0.4.3`）。
+- **影响范围：** 重写 `crates/gamestore-protocol/`（新增 `frame.rs`/`decode.rs`/`encode.rs`/`codec.rs`/`error.rs` +
+  `tests/roundtrip.rs`(proptest) + `tests/framed.rs`）；改造 `crates/gamestore-datanode/`（删除 `resp.rs`、重写 `server.rs`、
+  更新 `lib.rs`/`main.rs`/`tests/ping_smoke.rs`）；根 `Cargo.toml` 新增 `tokio-util`/`proptest`/`futures` 公共依赖；
+  更新 `Cargo.lock`（钉 `proptest=1.5.0`、`tempfile=3.14.0`）；更新 [`README.md`](../README.md) 当前状态。**不改动既有设计文档结论与 `spike/`。**
+- **退出标准（已达成）：** `cargo fmt --check`/`cargo clippy -D warnings`/`cargo test`/`cargo build` 全绿；
+  协议层 42 单测 + 6 属性测试（RESP2/RESP3 round-trip、逐字节分片 round-trip、多 bulk 命令 round-trip、任意字节不 panic）
+  + 2 个 `Framed` 集成测试通过；DataNode 起服务后用 **真实 `redis-py`** 分别以 RESP2/RESP3 完成 `PING`/`ECHO`/`HELLO`
+  握手（RESP3 客户端连接时自动 `HELLO 3`，服务端正确协商为 proto 3 并回 map）。
+- **后续方向：** 按依赖图推进 **I-03（`gamestore-engine`：通用引擎 + 编码 + Compaction GC）**；I-04 起在本协议层之上
+  建 `CommandRegistry` 与 String/Hash 命令，复用 spike 的 `redis_functional_test.py` 兼容性用例。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-02；MR-0014（I-01）；`spike/rust/src/resp.rs`。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---

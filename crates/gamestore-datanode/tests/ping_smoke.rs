@@ -63,3 +63,54 @@ async fn ping_with_argument_is_echoed() {
         "expected bulk 'hello', got {reply:?}"
     );
 }
+
+#[tokio::test]
+async fn echo_returns_bulk() {
+    let addr = start_server().await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+
+    let reply = roundtrip(&mut stream, b"*2\r\n$4\r\nECHO\r\n$2\r\nhi\r\n").await;
+    assert_eq!(reply, b"$2\r\nhi\r\n", "expected bulk 'hi', got {reply:?}");
+}
+
+#[tokio::test]
+async fn hello_default_returns_resp2_array_map() {
+    let addr = start_server().await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+
+    let reply = roundtrip(&mut stream, b"*1\r\n$5\r\nHELLO\r\n").await;
+    // RESP2 flattened map: an array whose first entry is `server`.
+    assert!(reply.starts_with(b"*"), "expected array, got {reply:?}");
+    assert!(
+        contains(&reply, b"server") && contains(&reply, b"gamestore"),
+        "hello reply missing server info: {reply:?}"
+    );
+}
+
+#[tokio::test]
+async fn hello_3_switches_to_resp3_map() {
+    let addr = start_server().await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+
+    let reply = roundtrip(&mut stream, b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n").await;
+    // RESP3 map replies start with `%`.
+    assert!(reply.starts_with(b"%"), "expected RESP3 map, got {reply:?}");
+    assert!(
+        contains(&reply, b"proto"),
+        "hello reply missing proto: {reply:?}"
+    );
+}
+
+#[tokio::test]
+async fn inline_command_with_arg_works() {
+    let addr = start_server().await;
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+
+    // Inline (non-array) form — what telnet/nc would type.
+    let reply = roundtrip(&mut stream, b"ECHO world\r\n").await;
+    assert_eq!(reply, b"$5\r\nworld\r\n", "got {reply:?}");
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}

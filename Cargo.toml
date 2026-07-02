@@ -39,6 +39,14 @@ metrics = "0.23"
 metrics-exporter-prometheus = { version = "0.15", default-features = false }
 # Byte buffers used across the protocol / engine boundaries.
 bytes = "1"
+# tokio codec framing (Decoder/Encoder) for the protocol adapter layer (I-02).
+tokio-util = { version = "0.7", features = ["codec"] }
+# Property-based testing (round-trip / fuzz-style coverage), dev-only (plan §1).
+# Pinned to 1.5.x: newer proptest pulls rand 0.9 → getrandom 0.4, which requires
+# the not-yet-stable `edition2024` and fails on our pinned Rust 1.83 toolchain.
+proptest = "=1.5.0"
+# Stream/Sink extension traits, used in dev tests for the tokio Framed adapter.
+futures = "0.3"
 # Internal workspace crates.
 gamestore-common = { path = "crates/gamestore-common", version = "0.1.0" }
 gamestore-protocol = { path = "crates/gamestore-protocol", version = "0.1.0" }

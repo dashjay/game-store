@@ -81,5 +81,7 @@
 
 进入实现阶段的 **总体框架与逐个 MR 分解计划** 见
 [`docs/design/10-implementation-plan-rust.md`](docs/design/10-implementation-plan-rust.md)：
-我们按"**一个 item 一个 MR**"顺序推进，首个落地为 `I-01`（Cargo workspace 与工程基线）。
+我们按"**一个 item 一个 MR**"顺序推进。已落地：`I-01`（Cargo workspace 与工程基线，MR-0014）、
+`I-02`（`gamestore-protocol`：RESP2/RESP3 sans-IO 编解码 + tokio `Framed` 适配，DataNode 接入并支持 `HELLO` 握手，MR-0015）。
+下一个为 `I-03`（`gamestore-engine`：通用引擎 + 编码 + Compaction GC）。
 能力里程碑与阶段划分见 [`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)。
