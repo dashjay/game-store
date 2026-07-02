@@ -26,7 +26,9 @@ fn bench_encoding(c: &mut Criterion) {
     c.bench_function("meta_encode", |b| b.iter(|| black_box(&meta).encode()));
 
     let raw_meta = meta.encode();
-    c.bench_function("meta_decode", |b| b.iter(|| Meta::decode(black_box(&raw_meta))));
+    c.bench_function("meta_decode", |b| {
+        b.iter(|| Meta::decode(black_box(&raw_meta)))
+    });
 
     c.bench_function("subkey_build", |b| {
         b.iter(|| subkey(black_box(key), black_box(meta.version), black_box(field)))

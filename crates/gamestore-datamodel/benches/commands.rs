@@ -44,9 +44,7 @@ fn bench_commands(c: &mut Criterion) {
     let b = Bench::new();
     let value = vec![0x42u8; 64];
 
-    c.bench_function("cmd_ping", |bch| {
-        bch.iter(|| black_box(b.exec(&[b"PING"])))
-    });
+    c.bench_function("cmd_ping", |bch| bch.iter(|| black_box(b.exec(&[b"PING"]))));
 
     c.bench_function("cmd_set", |bch| {
         let mut i = 0u64;
@@ -92,7 +90,12 @@ fn bench_commands(c: &mut Criterion) {
     for i in 0..100 {
         let score = format!("{i}");
         let member = format!("m{i}");
-        b.exec(&[b"ZADD", b"bench:zrange", score.as_bytes(), member.as_bytes()]);
+        b.exec(&[
+            b"ZADD",
+            b"bench:zrange",
+            score.as_bytes(),
+            member.as_bytes(),
+        ]);
     }
     c.bench_function("cmd_zrange_100", |bch| {
         bch.iter(|| black_box(b.exec(&[b"ZRANGE", b"bench:zrange", b"0", b"-1"])))

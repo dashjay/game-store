@@ -30,7 +30,9 @@ fn bench_store_ops(c: &mut Criterion) {
             // Rotate over a bounded keyspace so the memtable stays realistic.
             let key = format!("bench:str:{}", i % 10_000);
             i += 1;
-            store.set(black_box(key.as_bytes()), black_box(&value), 0).unwrap()
+            store
+                .set(black_box(key.as_bytes()), black_box(&value), 0)
+                .unwrap()
         })
     });
 
@@ -54,7 +56,11 @@ fn bench_store_ops(c: &mut Criterion) {
     });
 
     c.bench_function("store_hget", |b| {
-        b.iter(|| store.hget(black_box(b"bench:hash"), black_box(b"f7")).unwrap())
+        b.iter(|| {
+            store
+                .hget(black_box(b"bench:hash"), black_box(b"f7"))
+                .unwrap()
+        })
     });
 
     c.bench_function("store_zadd_update", |b| {
@@ -70,7 +76,9 @@ fn bench_store_ops(c: &mut Criterion) {
 
     c.bench_function("store_lpush_rpop", |b| {
         b.iter(|| {
-            store.push(black_box(b"bench:list"), &[value.clone()], true).unwrap();
+            store
+                .push(black_box(b"bench:list"), &[value.clone()], true)
+                .unwrap();
             store.pop(black_box(b"bench:list"), 1, false).unwrap()
         })
     });
