@@ -9,3 +9,11 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+gamestore-engine = { workspace = true }
+gamestore-protocol = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+# Fresh RocksDB-backed stores for the integration tests (GC / compaction
+# assertions need the real engine); unit tests run on the in-crate MemEngine.
+tempfile = { workspace = true }

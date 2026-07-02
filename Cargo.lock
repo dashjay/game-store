@@ -319,6 +319,12 @@ dependencies = [
 [[package]]
 name = "gamestore-datamodel"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "gamestore-engine",
+ "gamestore-protocol",
+ "tempfile",
+]
 
 [[package]]
 name = "gamestore-datanode"
