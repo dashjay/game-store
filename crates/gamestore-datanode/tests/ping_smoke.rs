@@ -5,8 +5,10 @@
 //! and assert the raw wire reply, so this exercises the real accept loop and
 //! protocol path (not just the `dispatch` unit tests).
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use gamestore_engine::{EngineConfig, Store};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -14,9 +16,13 @@ async fn start_server() -> std::net::SocketAddr {
     // Bind to an ephemeral port so tests can run in parallel / on busy hosts.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let dir = tempfile::TempDir::new().unwrap();
+    let store = Arc::new(Store::open(dir.path(), &EngineConfig::default()).unwrap());
     // Run the server until the test process exits; `pending` never resolves.
+    // The TempDir moves into the task so the data dir outlives the server.
     tokio::spawn(async move {
-        let _ = gamestore_datanode::serve(listener, std::future::pending::<()>()).await;
+        let _dir = dir;
+        let _ = gamestore_datanode::serve(listener, store, std::future::pending::<()>()).await;
     });
     addr
 }
