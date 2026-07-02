@@ -231,6 +231,64 @@ fn version_map_rebuilt_on_restart() {
     }
 }
 
+/// `FLUSHDB`/`FLUSHALL` (I-05): every metadata + subkey record is removed and
+/// the version map is cleared, so the store behaves like a fresh database.
+#[test]
+fn flush_all_clears_everything() {
+    let dir = TempDir::new().unwrap();
+    let s = open(&dir);
+
+    s.set(b"str", b"v", 0).unwrap();
+    s.hset(
+        b"h",
+        &[
+            (b"a".to_vec(), b"1".to_vec()),
+            (b"b".to_vec(), b"2".to_vec()),
+        ],
+    )
+    .unwrap();
+    assert_eq!(s.dbsize().unwrap(), 2);
+    assert_eq!(s.raw_subkey_count().unwrap(), 2);
+
+    s.flush_all().unwrap();
+    assert_eq!(s.dbsize().unwrap(), 0);
+    assert_eq!(s.raw_subkey_count().unwrap(), 0);
+    assert_eq!(s.get(b"str").unwrap(), None);
+    assert_eq!(s.hlen(b"h").unwrap(), 0);
+    assert_eq!(s.type_of(b"h").unwrap(), "none");
+
+    // The version table was cleared too: a recreated hash starts fresh and a
+    // compaction right after flush has nothing stale to reclaim.
+    s.hset(b"h", &[(b"new".to_vec(), b"1".to_vec())]).unwrap();
+    assert_eq!(
+        s.hgetall(b"h").unwrap(),
+        vec![(b"new".to_vec(), b"1".to_vec())]
+    );
+    s.compact().unwrap();
+    assert_eq!(s.raw_subkey_count().unwrap(), 1);
+}
+
+/// Flush must also survive a restart: nothing reappears after reopening.
+#[test]
+fn flush_all_survives_restart() {
+    let dir = TempDir::new().unwrap();
+
+    {
+        let s = open(&dir);
+        s.hset(b"h", &[(b"a".to_vec(), b"1".to_vec())]).unwrap();
+        s.set(b"k", b"v", 0).unwrap();
+        s.flush_all().unwrap();
+    }
+
+    {
+        let s = open(&dir);
+        assert_eq!(s.dbsize().unwrap(), 0);
+        assert_eq!(s.raw_subkey_count().unwrap(), 0);
+        assert_eq!(s.get(b"k").unwrap(), None);
+        assert_eq!(s.hlen(b"h").unwrap(), 0);
+    }
+}
+
 /// After a restart, a stale-version subkey left on disk must be GC'd and never
 /// leak into reads of the rebuilt key.
 #[test]
