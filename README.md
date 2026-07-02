@@ -93,6 +93,10 @@ RESP3 版本感知回复，spike 兼容性用例 32 项断言的 Rust 移植，M
 `I-06`（Set/ZSet/List 复合类型：`SADD/SREM/SISMEMBER/SMEMBERS/SCARD`、
 `ZADD/ZSCORE/ZRANGE/ZRANGEBYSCORE/ZREM/ZCARD`（ZSet 双重编码 + score 保序索引）、
 `LPUSH/RPUSH/LPOP/RPOP/LRANGE/LLEN`，`TYPE/DEL/EXPIRE` 对新类型生效、GC/重启/WRONGTYPE 全覆盖，
-真实 redis-py 新增 46 项断言 RESP2/RESP3 全过且既有 32 项不回归，MR-0019）。
-下一步为 `I-07`（可观测性与基准），完成后进入 Phase 2 的 `I-08`（WAL）。
+真实 redis-py 新增 46 项断言 RESP2/RESP3 全过且既有 32 项不回归，MR-0019）、
+`I-07`（可观测性与基准：Prometheus `/metrics` HTTP 端点（命令 QPS/延迟分位/慢命令/连接数 +
+RocksDB 引擎统计，口径对齐 08 文档）、Redis 风格慢日志、criterion 微基准（编码/引擎/命令三层）
+与端到端吞吐脚本，首个基线见 [`docs/benchmarks/`](docs/benchmarks/)，MR-0020）。
+**Phase 1（I-01~I-07）至此全部落地**；下一步进入 Phase 2 的 `I-08`（`gamestore-wal`：
+每 Core 共享 WAL + 崩溃恢复）。
 能力里程碑与阶段划分见 [`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)。

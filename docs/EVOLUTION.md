@@ -551,6 +551,63 @@
   [`design/03-storage-engine.md`](design/03-storage-engine.md) §2.3；MR-0016（I-03 引擎层）/
   MR-0017（I-04 命令层）；`tests/redis_composite_test.py`。
 
+### MR-0020 · I-07：可观测性与基准（Phase 1 收官）
+- **日期：** 2026-07-02
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-07 定义实现）
+- **动机：** "没有指标的功能视为未完成"（[`design/08-observability-ops.md`](design/08-observability-ops.md)）。
+  I-05 装好了 Prometheus recorder 但没有端点与具体指标，MR-0018 的"引擎调用同步内联"决策也约定
+  I-07 出数复核。本 MR 补齐 Phase 1 的可观测性（/metrics 端点、命令指标、慢日志）与基准套件
+  （criterion 微基准 + 端到端吞吐脚本），并建立首个可复现基线。范围严格限定在 I-07：不做 I-08 WAL。
+- **关键决策：**
+  - **指标口径对齐 08 §1（按 Phase-1 单机形态适配）：** `datanode_commands_total{cmd}`（QPS 经
+    `rate()`，对应 `proxy_qps`）、`datanode_command_latency_seconds{cmd,quantile}`（summary，
+    p50/p90/p95/p99/p999，对应 `proxy_latency_seconds` 的 quantile 形态）、
+    `datanode_slow_commands_total{cmd}`、`datanode_conn_active`（对应 `proxy_conn_active`）；
+    引擎侧经新增的 `GeneralEngine::stats()`（默认空实现，RocksDB 导出 block cache 占用/写停顿/
+    memtable/compaction 压力/SST 体积等 `rocksdb_*` gauge，覆盖 08 §1.2 的引擎信号）。
+    **标签有界**：未注册命令一律折叠为 `cmd="UNKNOWN"`，客户端任意输入不能铸造新标签（防基数爆炸）。
+    Quorum/Anti-Entropy/WAL 指标随各自 feature（Phase 2+）落地，不提前虚设。
+  - **/metrics 端点手写轻量 HTTP 而非启用 exporter 的 `http-listener` feature：** 该 feature 为一条
+    固定路由拉入整个 hyper 栈，且在钉死的 Rust 1.83 下每个新传递依赖都是 edition2024 风险点；
+    固定文本响应用 ~60 行 tokio 即可（仅 `GET /metrics`，其余 404）。引擎 gauge 与 recorder upkeep
+    在**每次抓取时**刷新，免去后台采样任务。配置新增 `[metrics] bind/port`（默认 `127.0.0.1:9600`）。
+  - **慢日志（Redis 风格）：** `[logging] slow_log_threshold_ms`（默认 10ms，对齐 Redis
+    `slowlog-log-slower-than`），超阈值命令以结构化 `WARN`（target `gamestore::slowlog`，含命令/
+    key/argc/耗时）输出并计入 `datanode_slow_commands_total`；经 `ServeOptions` 注入连接循环
+    （新增 `serve_with`，`serve` 保持默认参数兼容）。
+  - **基准套件三层：** criterion 微基准——编码层（`engine/benches/encoding.rs`，ns 级）、引擎层单操作
+    （`engine/benches/store_ops.rs`，真实 RocksDB）、命令层单命令（`datamodel/benches/commands.rs`，
+    含解析/分发，与引擎层对照可分离出命令层开销）；端到端吞吐脚本 `tests/bench_throughput.py`
+    （真实 redis-py，顺序 + pipeline 两模式）。首个基线记录在
+    [`benchmarks/2026-07-02-i07-baseline.md`](benchmarks/2026-07-02-i07-baseline.md)：
+    点操作引擎层 0.3~6.7 µs、命令层开销 ~0.1–0.7 µs、单连接 pipeline(100) 吞吐 7~15 万 ops/s。
+  - **MR-0018 "同步内联" 决策复核（已维持）：** 热路径命令 0.4~7.4 µs，与 `spawn_blocking` 一次
+    移交同量级甚至更低，外移只会净增延迟；最重范围命令（`HGETALL` 50 字段 ~104 µs）仍远低于 1ms。
+    重审触发条件已记录：热路径出现毫秒级命令，或 I-08 WAL 把 fsync 带入前台写路径。
+  - **工具链坑（新记录）：** criterion 以 `default-features=false` 引入仍踩 edition2024——其传递依赖
+    `clap >= 4.6` 拉 `clap_lex 1.x`；用 `cargo update -p clap --precise 4.5.23` 钉回（同 MR-0015/0016
+    的 proptest/tempfile 先例，已在根 `Cargo.toml` 注释登记）。另：本地 1.83 的 `cargo metadata`
+    无法解析 registry 中新 manifest（wit-bindgen），`cargo deny check` 本地不可运行——**主分支同样如此**
+    （非本 MR 回归），CI 的 `cargo-deny-action` 自带新工具链不受影响；新增依赖（criterion/clap 等）
+    均为 MIT/Apache-2.0，符合 deny.toml 白名单。
+- **影响范围：** `crates/gamestore-datanode`（新增 `observability.rs`：指标记录 + 慢日志 + /metrics
+  HTTP；`server.rs` 接入 `ServeOptions` 与命令计时；`main.rs` 装配端点；新增
+  `tests/metrics_endpoint.rs`）；`crates/gamestore-engine`（`GeneralEngine::stats` + RocksDB 属性导出 +
+  2 个 bench）；`crates/gamestore-datamodel`（1 个 bench）；`gamestore-common`（config 扩展 +
+  单测）；新增 `tests/bench_throughput.py` 与 `docs/benchmarks/2026-07-02-i07-baseline.md`；
+  根 `Cargo.toml` 登记 criterion；`config/datanode.example.toml` 同步。**不改动既有设计文档结论与 `spike/`。**
+- **退出标准（已达成）：** `cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
+  `cargo test --workspace` / `cargo build --workspace` 全绿；`curl /metrics` 可抓取（200 + 文本格式，
+  非法路径 404），指标含命令计数/延迟分位/慢命令/连接数/引擎 gauge，集成测试断言标签有界性；
+  慢日志在真实运行中验证触发（`COMPACT` 11ms > 10ms 阈值被记录）；基线数据可复现（命令与 flag 已
+  记录于基线文档）；spike 32 项与 I-06 的 46 项 redis-py 断言在打点后的服务上无回归。
+- **后续方向：** **Phase 1 全部收官**（I-01~I-07 落地）。按依赖图进入 Phase 2：
+  **I-08（`gamestore-wal`：每 Core 共享 WAL + 崩溃恢复，依赖 I-05）**，届时重审前台写路径
+  （fsync/组提交）并复核本 MR 维持的内联决策。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-07；
+  [`design/08-observability-ops.md`](design/08-observability-ops.md)；
+  [`benchmarks/2026-07-02-i07-baseline.md`](benchmarks/2026-07-02-i07-baseline.md)；MR-0018（内联决策）。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
