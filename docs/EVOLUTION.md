@@ -452,6 +452,54 @@
 - **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-04；
   MR-0015（I-02 协议层）/MR-0016（I-03 引擎层）；`spike/rust/src/commands.rs`；`spike/test/redis_functional_test.py`。
 
+### MR-0018 · I-05：`gamestore-datanode` 单机服务装配（Phase 1 退出标准达成）
+- **日期：** 2026-07-02
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-05 定义实现）
+- **动机：** MR-0015（I-02 协议层）、MR-0016（I-03 引擎层）、MR-0017（I-04 命令层）已各自就绪，
+  但 DataNode 的连接循环仍只回 `PING/ECHO/HELLO/QUIT`。进入 I-05，把三层真正装配成 **单机可服务的
+  DataNode**：`--config` 加载（数据目录/监听地址）、启动时 `Store::open` 并以 `Arc<Store<RocksEngine>>`
+  共享给所有连接、命令经 `CommandRegistry` 分发、补 `FLUSHDB`/`FLUSHALL` admin 与优雅关闭，
+  用 **真实 redis-py** 达成 [`design/09-roadmap.md`](design/09-roadmap.md) 的 Phase 1 退出标准。
+  范围严格限定在 I-05：不做 I-06 的 Set/ZSet/List、不做 I-07 的指标端点、不做 I-08 的 WAL。
+- **关键决策：**
+  - **分层口径（沿用 I-04 约定）：** 连接级命令（`HELLO` 版本协商、`QUIT`）与标准客户端连接时发出的
+    housekeeping（`CLIENT SETINFO/SETNAME/ID/GETNAME`、`SELECT`（仅 0 号库）、`COMMAND`（回空数组））
+    留在 DataNode 层；`FLUSHDB`/`FLUSHALL` 全库 admin 也在此层（它们关乎服务器而非数据模型）；
+    **其余一律走 `CommandRegistry::standard()`**，未知命令由注册表统一回 `ERR unknown command '...'`
+    （I-02 时代 DataNode 自带的口径随之删除）。
+  - **`FLUSHDB`/`FLUSHALL` 落在引擎层为 `Store::flush_all`：** 单库语义下两者等价；
+    一个原子 `WriteBatch` 同时删光元数据与子键记录，**随后清空 version 表**（内存 `key -> version` 映射），
+    保证崩溃不会留下"元数据指着已删子键"的中间态；接受并忽略 `ASYNC`/`SYNC` 修饰符（同步执行）。
+  - **阻塞引擎调用直接同步执行（不走 `spawn_blocking`）：** Phase-1 的引擎操作是 RocksDB 点读/点写/短前缀扫描
+    （memtable/block cache 内微秒级、前台无 fsync），`spawn_blocking` 会给**每条**命令加一次任务切换开销、
+    并把工作汇聚到无界的 blocking 池；多线程 runtime 下其它连接在各自 worker 上继续推进。唯一真正长耗时的
+    `COMPACT` 是测试/admin 内省动词、不在热路径。此决策待 I-07 基准出数后复核，I-08 引入 WAL 时反正要重审写路径。
+  - **优雅关闭：** shutdown future 触发后停止 accept，经 `tokio::sync::watch` 通知每个连接
+    "完成在途命令后关闭"，`serve` 用 `JoinSet` 等全部连接 drain 完才返回（集成测试覆盖：
+    idle 连接在关闭后收到 EOF、`serve` 正常返回）。
+  - **`Core` 仅作逻辑预留（plan §1）：** 今天一个 DataNode = 一个逻辑 Core = 一个共享 `Arc<Store>`；
+    注释明确 I-08/Phase-2 时该 `Arc<Store>` 升级为 `Core` 单元（store + WAL + replica 集合）、
+    `serve` 扩展为按 Partition 路由的 `Vec<Core>`，不实装 thread-per-core。
+  - **配置扩展：** `[storage] data_dir`（默认 `./data`，启动时自动创建），支持
+    `GAMESTORE_STORAGE__DATA_DIR` env 与 `--data-dir` CLI 覆盖，`config/datanode.example.toml` 同步更新。
+  - **连接 id：** 进程内单调递增的原子计数器，供 `HELLO` 回复的 `id` 字段与 `CLIENT ID` 使用（此前恒为 0）。
+- **影响范围：** 重写 `crates/gamestore-datanode/src/server.rs`（注册表接入 + admin/housekeeping + 优雅 drain）、
+  `main.rs`（开 store、`--data-dir`）、更新 `lib.rs`/`Cargo.toml`/`tests/ping_smoke.rs`、新增 `tests/e2e_data.rs`；
+  `crates/gamestore-engine` 新增 `Store::flush_all` + 2 个集成测试；`gamestore-common` 配置新增 `StorageConfig`；
+  更新 `config/datanode.example.toml` 与 [`README.md`](../README.md) 当前状态。**未引入新外部依赖**；
+  **不改动既有设计文档结论与 `spike/`。**
+- **退出标准（已达成，Phase 1 DoD）：** `cargo run -p gamestore-datanode -- --config ...` 起服务后，
+  **真实 redis-py** 跑 `spike/test/redis_functional_test.py` **RESP2 与 RESP3（protocol=3）各 32/32 断言全部通过**
+  （首次经 TCP 端到端，覆盖 String/Hash/TTL/GC/FLUSHDB）；**重启不丢数据** 两重验证——手动起停进程
+  （写入 → Ctrl-C → 重启 → 数据可读）与自动化集成测试 `restart_preserves_persisted_data`；
+  `cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace` /
+  `cargo build --workspace` 全绿。
+- **后续方向：** Phase 1 仅剩 **I-06（Set/ZSet/List 复合类型，依赖 I-04）** 与
+  **I-07（可观测性与基准：/metrics 端点、慢日志、criterion 基准，依赖 I-05）**，两者可并行；
+  之后进入 Phase 2 的 **I-08（WAL）**。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-05；
+  [`design/09-roadmap.md`](design/09-roadmap.md) Phase 1；MR-0015/0016/0017；`spike/test/redis_functional_test.py`。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---

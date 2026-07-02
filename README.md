@@ -86,6 +86,9 @@
 `I-03`（`gamestore-engine`：`GeneralEngine` 抽象 + RocksDB 实现 + "元数据键 + 子键 + 结构 version" 编码 +
 Compaction Filter 后台 GC + `RAWCOUNT/DBSIZE/COMPACT` 内省，MR-0016）、
 `I-04`（`gamestore-datamodel`：`CommandRegistry` + String/Hash/TTL 命令层，Redis 一致的 arity/错误口径，
-RESP3 版本感知回复，spike 兼容性用例 32 项断言的 Rust 移植，MR-0017）。
-下一个为 `I-05`（`gamestore-datanode`：单机服务装配，把命令层接入连接循环并达成 Phase 1 退出标准）。
+RESP3 版本感知回复，spike 兼容性用例 32 项断言的 Rust 移植，MR-0017）、
+`I-05`（`gamestore-datanode`：单机服务装配——`--config` 加载 + 共享 `Arc<Store>` + 命令注册表接入连接循环 +
+`FLUSHDB`/`FLUSHALL` + 优雅关闭；**Phase 1 退出标准已达成**：真实 redis-py 经 TCP 以 RESP2/RESP3
+各通过全部 32 项兼容性断言，重启不丢已落盘数据，MR-0018）。
+下一步为 `I-06`（Set/ZSet/List 复合类型）与 `I-07`（可观测性与基准），两者可并行推进。
 能力里程碑与阶段划分见 [`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)。
