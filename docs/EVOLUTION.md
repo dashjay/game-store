@@ -500,6 +500,57 @@
 - **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-05；
   [`design/09-roadmap.md`](design/09-roadmap.md) Phase 1；MR-0015/0016/0017；`spike/test/redis_functional_test.py`。
 
+### MR-0019 · I-06：Set / ZSet / List 复合类型补全
+- **日期：** 2026-07-02
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-06 定义实现）
+- **动机：** MR-0018（I-05）达成 Phase 1 退出标准后，数据模型仍只有 String/Hash。进入 I-06，按
+  [`design/03-storage-engine.md`](design/03-storage-engine.md) §2.3 的编码把 Set/ZSet/List 三类结构
+  落到引擎层与命令层，并让 `TYPE`/`DEL`/`EXPIRE` 等通用命令对新类型生效。范围严格限定在 I-06：
+  不做 I-07 的指标端点、不做 I-08 的 WAL。
+- **关键决策：**
+  - **编码只增不改（既有布局逐字节不动）：** 新类型在既有 `[type][version BE][expire_ms BE][payload]`
+    元数据布局上新增 type tag（`TYPE_SET=3`/`TYPE_ZSET=4`/`TYPE_LIST=5`）；Set 成员复用 Hash 的
+    subkey 布局、值为空（成员性由键表达，03 §2.3）；String/Hash 的磁盘布局与 spike 保持逐字节一致。
+  - **ZSet 双重编码（03 §2.3）：** 成员 subkey 存 score（8 字节保序编码），另在 **新前缀
+    `ZSCORE_PREFIX=0x03`** 下建 score 索引记录 `[prefix][keylen][key][version][保序score][member]`，
+    前缀扫描天然得到 `(score, member)` 升序——`ZRANGE`/`ZRANGEBYSCORE` 即一次有序扫描（同分即按
+    member 字典序，与 Redis 一致）。score 保序编码用标准 float 技巧（负数全位取反、非负翻符号位），
+    `ZADD` 更新分数时同批删旧索引、写新索引，不留脏记录。
+  - **List 编码（03 §2.3）：** 元素 subkey 的 field 为 8 字节大端 index（天然按数值排序），元数据
+    payload 存 `[head, tail)` 边界，初始 index 取 `1<<63` 让两端 push 都近乎无界；两端 push/pop O(1)，
+    index 始终稠密（只动两端）。
+  - **GC 统一覆盖两族版本化记录：** `encoding::parse_owner_version` 同时解析 subkey 与 score 索引
+    （同构键形），`VersionMap` 的 Compaction Filter 判定与启动重建对四种复合类型一视同仁；
+    `RAWCOUNT`/`FLUSHDB` 也覆盖 `ZSCORE_PREFIX`。`DEL`/过期对新类型仍是 O(1) version 递增。
+  - **命令面（Redis 语义对齐）：** `SADD/SREM/SISMEMBER/SMEMBERS/SCARD`；
+    `ZADD/ZSCORE/ZRANGE(WITHSCORES)/ZRANGEBYSCORE(WITHSCORES/LIMIT/±inf/`(`排他界)/ZREM/ZCARD`；
+    `LPUSH/RPUSH/LPOP/RPOP([count]，Redis 6.2 语义)/LRANGE/LLEN`。空集合/空列表随最后一个成员删除；
+    `ZADD` 的 `NX/XX/GT/LT/CH/INCR` 标志与 `ZRANGE` 的 `REV/BYSCORE/BYLEX` 扩展按 I-04 `SET NX/XX`
+    先例显式回 `ERR syntax error`（不静默误解析）。score 解析拒绝 NaN、接受 `±inf`/科学计数法，
+    回复格式对齐 Redis（整数值不带小数点）。
+  - **RESP3 版本感知回复：** `SMEMBERS` 回原生 set、`ZSCORE` 回原生 double、`ZRANGE ... WITHSCORES`
+    回嵌套 `[member, score]` 对（score 为 double），RESP2 保持扁平数组/bulk——与 Redis 7 行为一致，
+    经真实 redis-py `protocol=3` 验证。
+  - **测试分层：** 引擎层 12 个新集成测试（三类型语义、WRONGTYPE 交叉矩阵、GC 回收到 0、TTL、
+    重启后 version 表重建与边界恢复、ZADD 更新不留脏索引）；命令层 20 个新测试文件级用例
+    （正常/边界/错误路径全覆盖）；DataNode 线级测试扩展（新类型 TCP 往返、RESP3 形态、重启持久化）；
+    新增 **`tests/redis_composite_test.py`（46 项断言，真实 redis-py，RESP2/RESP3 双跑）**，
+    spike 的 32 项基线套件保持冻结并在 RESP2/RESP3 下无回归（32/32）。
+- **影响范围：** `crates/gamestore-engine`（`encoding.rs` 扩展 + `gc.rs` 谓词泛化 + `store.rs` 新增
+  三类型操作与 `load_typed`/`new_composite_meta` 收敛重复逻辑）；`crates/gamestore-datamodel`
+  （新增 `commands/{set,zset,list}.rs` 与对应测试文件）；`crates/gamestore-datanode/tests/e2e_data.rs`
+  扩展；新增仓库根 `tests/redis_composite_test.py`（plan §2.1 的跨 crate 一致性用例位）。
+  **未引入新外部依赖**；**不改动既有设计文档结论与 `spike/`**。
+- **退出标准（已达成）：** `cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
+  `cargo test --workspace` / `cargo build --workspace` 全绿；真实 redis-py 经 TCP：spike 32 项断言
+  RESP2/RESP3 双双无回归、新类型 46 项断言 RESP2/RESP3 全过；手动起停进程验证新类型数据重启不丢；
+  `DEL` 大 Set/ZSet/List 后 `COMPACT` 将物理记录（含 score 索引）回收到 0。
+- **后续方向：** Phase 1 仅剩 **I-07（可观测性与基准，依赖 I-05）**；之后进入 Phase 2 的
+  **I-08（`gamestore-wal`）**。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-06；
+  [`design/03-storage-engine.md`](design/03-storage-engine.md) §2.3；MR-0016（I-03 引擎层）/
+  MR-0017（I-04 命令层）；`tests/redis_composite_test.py`。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
