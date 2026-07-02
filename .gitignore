@@ -4,3 +4,4 @@
 
 # Local datanode data directories
 /tmp-data/
+data/
