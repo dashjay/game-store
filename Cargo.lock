@@ -457,6 +457,7 @@ dependencies = [
  "gamestore-datamodel",
  "gamestore-engine",
  "gamestore-protocol",
+ "gamestore-wal",
  "metrics",
  "metrics-exporter-prometheus",
  "tempfile",

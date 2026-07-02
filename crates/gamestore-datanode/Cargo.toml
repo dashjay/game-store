@@ -22,6 +22,7 @@ gamestore-common = { workspace = true }
 gamestore-protocol = { workspace = true }
 gamestore-engine = { workspace = true }
 gamestore-datamodel = { workspace = true }
+gamestore-wal = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }

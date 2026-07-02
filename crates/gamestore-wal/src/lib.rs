@@ -27,11 +27,13 @@
 pub mod engine;
 pub mod error;
 pub mod file;
+pub mod null;
 pub mod record;
 pub mod wal;
 
 pub use engine::WalEngine;
 pub use error::{Result, WalError};
 pub use file::{FileWal, WalConfig, DEFAULT_SEGMENT_MAX_BYTES};
+pub use null::NullWal;
 pub use record::{Lsn, WalOp, WalRecord};
 pub use wal::{Replayed, Wal};

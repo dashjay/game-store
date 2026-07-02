@@ -19,17 +19,23 @@
 //! rather than through `spawn_blocking`. Rationale (recorded in
 //! `docs/EVOLUTION.md` MR-0018): Phase-1 operations are RocksDB point
 //! reads/writes and short prefix scans — microsecond-scale against memtable/
-//! block cache, without fsync on the foreground path — while `spawn_blocking`
-//! adds task-handoff latency to *every* command and funnels work through the
-//! (unbounded, cold) blocking pool. The multi-threaded runtime keeps other
-//! connections progressing on their own workers. The one genuinely long call
-//! (`COMPACT`) is a test/admin introspection verb, not a hot-path command.
-//! **Re-reviewed in I-07 with benchmark data and upheld** (see
-//! `docs/benchmarks/2026-07-02-i07-baseline.md` §3): hot-path commands
-//! execute in 0.4–7.4 µs, the same order as a `spawn_blocking` handoff
-//! itself; the heaviest range command stays ~100 µs. Revisit when a hot-path
-//! command reaches millisecond scale or when the WAL (I-08) puts fsync on the
-//! foreground write path.
+//! block cache — while `spawn_blocking` adds task-handoff latency to *every*
+//! command and funnels work through the (unbounded, cold) blocking pool. The
+//! multi-threaded runtime keeps other connections progressing on their own
+//! workers. The one genuinely long call (`COMPACT`) is a test/admin verb.
+//!
+//! **I-08 update — fsync now on the write path, decision upheld with data.**
+//! As of I-08 a write additionally appends to the WAL and `fsync`s before the
+//! engine apply, so a write *does* block its worker for one fsync. We
+//! re-reviewed inline-vs-offload here (the MR-0020 covenant) and kept inline
+//! (see `docs/benchmarks/2026-07-02-i08-wal-writepath.md` §3): the WAL's
+//! group commit coalesces concurrent writers into a single fsync, the
+//! multi-threaded runtime lets other connections proceed while one worker is
+//! parked in fsync, and moving the whole engine+fsync call to `spawn_blocking`
+//! would add a handoff to *every* command (reads included) for no throughput
+//! win. Revisit — a dedicated per-Core write thread / batching actor — if a
+//! single Core's write concurrency outgrows the runtime's worker count or
+//! fsync latency dominates in production.
 //!
 //! # `Core` as a logical unit (reservation, not implemented)
 //!
@@ -43,6 +49,13 @@
 //! `Core` unit (store + WAL + replica set), and `serve` grows a `Vec<Core>`
 //! routed by partition — without changing the connection/dispatch layering
 //! established here.
+//!
+//! **I-08 update:** the Core now is store + WAL. The `Arc<Store>` served here is
+//! a `Store<WalEngine<RocksEngine>>` (see [`crate::core`]): its engine logs and
+//! `fsync`s each write before applying it. The dispatch layer below is
+//! unchanged — the WAL lives at the `GeneralEngine::write` choke point. The
+//! multi-Replica-per-Core shared-WAL form is still just an interface seam
+//! (`Arc<dyn Wal>`, per-record partition id).
 
 use std::future::Future;
 use std::sync::atomic::{AtomicI64, Ordering};

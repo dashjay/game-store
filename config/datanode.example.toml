@@ -9,9 +9,25 @@ bind = "127.0.0.1"
 port = 6380
 
 [storage]
-# Directory holding the persistent data (RocksDB). Created on startup if
-# missing. Data written here survives process restarts.
+# Directory holding the persistent data. Created on startup if missing. Data
+# written here survives process restarts. Contains two subdirectories:
+#   <data_dir>/engine  — the RocksDB general engine
+#   <data_dir>/wal     — the write-ahead log (I-08)
 data_dir = "./data"
+
+[wal]
+# Write-ahead log (I-08). Every write is appended here and fsync'd before it is
+# applied to the engine, so acknowledged writes survive a crash. Concurrent
+# writers share one fsync (group commit). RocksDB's own WAL is disabled on this
+# path — the WAL below is authoritative.
+#   enabled          — false uses a no-op WAL (NO crash durability; benchmarks
+#                      of the fsync cost only)
+#   segment_max_bytes — roll to a new WAL segment at this size
+#   checkpoint_bytes  — once the retained log reaches this size, flush the
+#                      engine and GC the redundant log prefix
+enabled = true
+segment_max_bytes = 67108864    # 64 MiB
+checkpoint_bytes = 268435456    # 256 MiB
 
 [logging]
 # Log level or full EnvFilter directive, e.g. "info" or "gamestore=debug,info".

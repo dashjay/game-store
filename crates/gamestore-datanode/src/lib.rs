@@ -14,8 +14,10 @@
 //! `docs/design/02-architecture.md` §3.2 (see the `Core` note in [`server`]).
 #![forbid(unsafe_code)]
 
+pub mod core;
 pub mod observability;
 pub mod server;
 
+pub use core::{open_core, CoreEngine, CoreStore};
 pub use observability::serve_metrics;
 pub use server::{serve, serve_with, ServeOptions};

@@ -16,6 +16,11 @@
 //! - `rocksdb_*` gauges — engine statistics ([`GeneralEngine::stats`]):
 //!   block-cache usage, write-stall state, memtable/compaction pressure,
 //!   SST footprint (08 §1.2's `rocksdb_*` / `disk_used_bytes` signals).
+//! - `wal_fsync_latency_seconds` — WAL fsync latency (one sample per
+//!   group-commit round, emitted by [`gamestore_wal`]).
+//! - `wal_gc_pending` — retained WAL bytes awaiting GC (via
+//!   [`GeneralEngine::stats`] on the WAL engine). Both track 08 §1.2's WAL
+//!   signals (I-08).
 //!
 //! The HTTP endpoint is a **hand-rolled minimal HTTP/1.1 responder** rather
 //! than `metrics-exporter-prometheus`'s optional `http-listener` feature: that
@@ -50,6 +55,16 @@ pub fn describe_metrics() {
         "Commands that exceeded the slow-log threshold"
     );
     metrics::describe_gauge!("datanode_conn_active", "Open RESP connections");
+    // WAL (I-08), aligned with docs/design/08-observability-ops.md §1.2.
+    metrics::describe_histogram!(
+        "wal_fsync_latency_seconds",
+        metrics::Unit::Seconds,
+        "Latency of WAL fsync syscalls (one per group-commit round)"
+    );
+    metrics::describe_gauge!(
+        "wal_gc_pending",
+        "Retained WAL bytes awaiting GC (truncated after checkpoint)"
+    );
 }
 
 /// Record one executed command: throughput counter, latency histogram and —
