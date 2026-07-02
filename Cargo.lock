@@ -231,6 +231,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "criterion"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -448,6 +457,7 @@ dependencies = [
  "gamestore-datamodel",
  "gamestore-engine",
  "gamestore-protocol",
+ "gamestore-wal",
  "metrics",
  "metrics-exporter-prometheus",
  "tempfile",
@@ -480,6 +490,20 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "gamestore-wal"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "criterion",
+ "gamestore-common",
+ "gamestore-engine",
+ "metrics",
+ "tempfile",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

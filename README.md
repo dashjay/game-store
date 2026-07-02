@@ -97,6 +97,15 @@ RESP3 版本感知回复，spike 兼容性用例 32 项断言的 Rust 移植，M
 `I-07`（可观测性与基准：Prometheus `/metrics` HTTP 端点（命令 QPS/延迟分位/慢命令/连接数 +
 RocksDB 引擎统计，口径对齐 08 文档）、Redis 风格慢日志、criterion 微基准（编码/引擎/命令三层）
 与端到端吞吐脚本，首个基线见 [`docs/benchmarks/`](docs/benchmarks/)，MR-0020）。
-**Phase 1（I-01~I-07）至此全部落地**；下一步进入 Phase 2 的 `I-08`（`gamestore-wal`：
-每 Core 共享 WAL + 崩溃恢复）。
+**Phase 1（I-01~I-07）至此全部落地。**
+
+进入 **Phase 2**：已落地 `I-08`（`gamestore-wal`：每 Core 共享 WAL + 崩溃恢复，MR-0021）——
+`Wal` trait + 分段文件实现（segment、**组提交/合并 fsync**、每记录 CRC 校验、崩溃时截断损坏/撕裂尾部），
+DataNode 写路径接入"**先写 WAL 并 fsync、再入引擎**"（`Arc<Store>` 升级为 store+WAL 的逻辑 Core），
+启动时重放未下刷记录（物理 redo，幂等），WAL 指标 `wal_fsync_latency_seconds`/`wal_gc_pending`
+接入 `/metrics`；RocksDB 自带 WAL 关闭、由本 WAL 权威持久化，checkpoint 下刷后 GC 日志。
+`kill -9` / 引擎丢失后重放不丢已确认写、幂等重放、CRC 与撕裂尾部恢复均有测试；组提交降低 fsync 次数的
+基准佐证与写路径新基线见 [`docs/benchmarks/2026-07-02-i08-wal-writepath.md`](docs/benchmarks/2026-07-02-i08-wal-writepath.md)；
+真实 redis-py 断言（spike 32 项 + 复合类型 46 项，RESP2/RESP3）不回归。
+下一步为 `I-09`（副本 RPC 与集群装配）与 `I-10`（HLC 时间戳），两者可并行。
 能力里程碑与阶段划分见 [`docs/design/09-roadmap.md`](docs/design/09-roadmap.md)。

@@ -22,6 +22,8 @@ pub struct Config {
     pub server: ServerConfig,
     /// Storage engine settings (data directory).
     pub storage: StorageConfig,
+    /// Write-ahead log settings (I-08).
+    pub wal: WalSettings,
     /// Structured logging settings.
     pub logging: LoggingConfig,
     /// Metrics exporter settings.
@@ -68,6 +70,36 @@ impl Default for StorageConfig {
     fn default() -> Self {
         StorageConfig {
             data_dir: PathBuf::from("./data"),
+        }
+    }
+}
+
+/// Write-ahead log configuration (I-08).
+///
+/// The DataNode logs every write to a per-Core WAL and `fsync`s it before
+/// applying to the engine, so acknowledged writes survive a crash. Disabling it
+/// removes that guarantee and is only meant for measuring the fsync cost of the
+/// write path against the pre-WAL baseline.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WalSettings {
+    /// Whether the WAL is on the write path. `true` gives crash durability;
+    /// `false` (a no-op WAL) drops durability and is for benchmarking only.
+    pub enabled: bool,
+    /// Roll to a new WAL segment once the active one reaches this many bytes.
+    pub segment_max_bytes: u64,
+    /// Once the retained (un-GC'd) log reaches this many bytes, checkpoint:
+    /// flush the engine and truncate the now-redundant log prefix.
+    pub checkpoint_bytes: u64,
+}
+
+impl Default for WalSettings {
+    fn default() -> Self {
+        WalSettings {
+            enabled: true,
+            // 64 MiB segments, checkpoint after ~4 segments of retained log.
+            segment_max_bytes: 64 * 1024 * 1024,
+            checkpoint_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -155,6 +187,8 @@ impl Config {
     /// Recognised keys (nested via `__`):
     /// - `GAMESTORE_SERVER__BIND`, `GAMESTORE_SERVER__PORT`
     /// - `GAMESTORE_STORAGE__DATA_DIR`
+    /// - `GAMESTORE_WAL__ENABLED`, `GAMESTORE_WAL__SEGMENT_MAX_BYTES`,
+    ///   `GAMESTORE_WAL__CHECKPOINT_BYTES`
     /// - `GAMESTORE_LOGGING__LEVEL`, `GAMESTORE_LOGGING__SLOW_LOG_THRESHOLD_MS`
     /// - `GAMESTORE_METRICS__ENABLED`, `GAMESTORE_METRICS__BIND`,
     ///   `GAMESTORE_METRICS__PORT`
@@ -169,6 +203,21 @@ impl Config {
         }
         if let Some(v) = env_var("STORAGE__DATA_DIR") {
             self.storage.data_dir = PathBuf::from(v);
+        }
+        if let Some(v) = env_var("WAL__ENABLED") {
+            if let Ok(enabled) = v.parse() {
+                self.wal.enabled = enabled;
+            }
+        }
+        if let Some(v) = env_var("WAL__SEGMENT_MAX_BYTES") {
+            if let Ok(n) = v.parse() {
+                self.wal.segment_max_bytes = n;
+            }
+        }
+        if let Some(v) = env_var("WAL__CHECKPOINT_BYTES") {
+            if let Ok(n) = v.parse() {
+                self.wal.checkpoint_bytes = n;
+            }
         }
         if let Some(v) = env_var("LOGGING__LEVEL") {
             self.logging.level = v;
@@ -216,6 +265,20 @@ mod tests {
         assert_eq!(cfg.logging.slow_log_threshold_ms, 10);
         assert!(cfg.metrics.enabled);
         assert_eq!(cfg.metrics.addr(), "127.0.0.1:9600");
+        assert!(cfg.wal.enabled);
+        assert_eq!(cfg.wal.segment_max_bytes, 64 * 1024 * 1024);
+        assert_eq!(cfg.wal.checkpoint_bytes, 256 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parses_wal_settings() {
+        let cfg = Config::from_toml(
+            "[wal]\nenabled = false\nsegment_max_bytes = 1024\ncheckpoint_bytes = 4096\n",
+        )
+        .unwrap();
+        assert!(!cfg.wal.enabled);
+        assert_eq!(cfg.wal.segment_max_bytes, 1024);
+        assert_eq!(cfg.wal.checkpoint_bytes, 4096);
     }
 
     #[test]

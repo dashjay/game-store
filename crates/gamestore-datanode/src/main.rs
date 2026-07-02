@@ -5,11 +5,10 @@
 //! logic lives in the library so it can be integration-tested.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use anyhow::Context;
 use gamestore_common::Config;
-use gamestore_engine::{EngineConfig, Store};
+use gamestore_engine::EngineConfig;
 use tokio::net::TcpListener;
 
 /// Parsed command-line arguments.
@@ -100,16 +99,20 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Open the store (one per DataNode; see the `Core` note in `server`). All
-    // connections share it via Arc.
+    // Open the DataNode's Core: the RocksDB store fronted by a per-Core WAL
+    // (I-08). One Core per DataNode today; all connections share it via Arc
+    // (see the `Core` note in `server`). On open, the WAL is replayed into the
+    // engine so no confirmed write is lost across a crash.
     let data_dir = cfg.storage.data_dir.clone();
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("creating data directory {}", data_dir.display()))?;
-    let store = Arc::new(
-        Store::open(&data_dir, &EngineConfig::default())
-            .with_context(|| format!("opening store at {}", data_dir.display()))?,
+    let store = gamestore_datanode::open_core(&data_dir, &EngineConfig::default(), &cfg.wal)
+        .with_context(|| format!("opening core at {}", data_dir.display()))?;
+    tracing::info!(
+        data_dir = %data_dir.display(),
+        wal_enabled = cfg.wal.enabled,
+        "core opened"
     );
-    tracing::info!(data_dir = %data_dir.display(), "store opened");
 
     // The /metrics endpoint (I-07) runs alongside the RESP listener and stops
     // with the process (it holds no state that needs draining).
@@ -143,9 +146,18 @@ async fn main() -> anyhow::Result<()> {
     let options = gamestore_datanode::ServeOptions {
         slow_log_threshold: std::time::Duration::from_millis(cfg.logging.slow_log_threshold_ms),
     };
+    // Keep a handle to checkpoint the WAL on a clean shutdown.
+    let core = store.clone();
     gamestore_datanode::serve_with(listener, store, options, shutdown_signal())
         .await
         .context("serving connections")?;
+
+    // Graceful shutdown: flush the engine and GC the WAL so the next start
+    // replays little to nothing. A failure here is non-fatal (recovery still
+    // works from the un-truncated log).
+    if let Err(e) = core.engine().checkpoint() {
+        tracing::warn!(error = %e, "wal checkpoint on shutdown failed");
+    }
 
     tracing::info!("gamestore-datanode stopped");
     Ok(())

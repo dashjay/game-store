@@ -17,5 +17,5 @@ pub mod error;
 pub mod metrics;
 pub mod telemetry;
 
-pub use config::Config;
+pub use config::{Config, WalSettings};
 pub use error::{Error, Result};

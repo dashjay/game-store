@@ -49,6 +49,16 @@ pub struct EngineConfig {
     /// them from starving foreground writes. `None` disables the limiter.
     /// Default `None`.
     pub rate_limit_bytes_per_sec: Option<i64>,
+    /// Disable RocksDB's *own* write-ahead log. Default `false`.
+    ///
+    /// Set to `true` when a higher layer already provides durability (I-08's
+    /// [`gamestore_wal`], which logs+fsyncs every write before it reaches the
+    /// engine): keeping RocksDB's WAL on too would double-log every write. With
+    /// it off, applied writes become crash-durable in the engine only once a
+    /// memtable flush lands them in an SST — which the WAL layer forces at
+    /// checkpoint time before truncating its own log
+    /// ([`docs/design/03-storage-engine.md`] §6).
+    pub disable_rocksdb_wal: bool,
 }
 
 impl Default for EngineConfig {
@@ -59,6 +69,7 @@ impl Default for EngineConfig {
             block_cache_bytes: Some(64 * 1024 * 1024),
             write_buffer_bytes: Some(64 * 1024 * 1024),
             rate_limit_bytes_per_sec: None,
+            disable_rocksdb_wal: false,
         }
     }
 }
@@ -67,6 +78,7 @@ impl Default for EngineConfig {
 pub struct RocksEngine {
     db: DB,
     gc: Arc<GcSlot>,
+    disable_wal: bool,
 }
 
 impl RocksEngine {
@@ -112,7 +124,11 @@ impl RocksEngine {
         });
 
         let db = DB::open(&opts, path).map_err(EngineError::from)?;
-        Ok(RocksEngine { db, gc })
+        Ok(RocksEngine {
+            db,
+            gc,
+            disable_wal: config.disable_rocksdb_wal,
+        })
     }
 }
 
@@ -129,7 +145,13 @@ impl GeneralEngine for RocksEngine {
                 WriteOp::Delete(k) => wb.delete(k),
             }
         }
-        self.db.write(wb).map_err(EngineError::from)
+        if self.disable_wal {
+            let mut wo = rocksdb::WriteOptions::default();
+            wo.disable_wal(true);
+            self.db.write_opt(wb, &wo).map_err(EngineError::from)
+        } else {
+            self.db.write(wb).map_err(EngineError::from)
+        }
     }
 
     fn scan_prefix<'a>(&'a self, prefix: &[u8]) -> Box<dyn Iterator<Item = ScanItem> + 'a> {
@@ -162,6 +184,12 @@ impl GeneralEngine for RocksEngine {
 
     fn install_gc(&self, predicate: Arc<dyn GcPredicate>) {
         *self.gc.write().expect("gc slot poisoned") = Some(predicate);
+    }
+
+    /// Flush memtables to SST files so applied data is durable on disk
+    /// independently of any WAL (used as a checkpoint before WAL truncation).
+    fn flush(&self) -> Result<()> {
+        self.db.flush().map_err(EngineError::from)
     }
 
     /// RocksDB properties exported as gauges, chosen to cover the engine

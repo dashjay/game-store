@@ -608,6 +608,88 @@
   [`design/08-observability-ops.md`](design/08-observability-ops.md)；
   [`benchmarks/2026-07-02-i07-baseline.md`](benchmarks/2026-07-02-i07-baseline.md)；MR-0018（内联决策）。
 
+### MR-0021 · I-08：`gamestore-wal` 每 Core 共享 WAL + 崩溃恢复（Phase 2 起点）
+- **日期：** 2026-07-02
+- **类型：** AI（按 [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) 的 I-08 定义实现）
+- **动机：** Phase 1（I-01~I-07，MR-0014~0020）收官后进入 Phase 2。北极星要求"不丢数据：
+  写入须经 WAL 落盘后才确认"。此前 DataNode 的持久化只靠 RocksDB 自带 WAL（默认不 fsync，
+  掉电可能丢数据），且没有为无主多写/Operation 日志预留的持久化层。I-08 落地
+  [`03-storage-engine.md`](design/03-storage-engine.md) §6/§8 的 **每 Core 共享 WAL**：
+  写入 **先写 WAL 并 fsync、再入引擎**，崩溃后重放不丢已确认写。范围严格限定在 I-08：
+  不实现 I-09 副本 RPC、I-10 HLC 或多 Replica 共享（今天仍是单 Replica）。
+- **关键决策：**
+  - **`Wal` trait（plan §2.3）+ 分段文件实现（`FileWal`）：** `append`（合并提交，分配 LSN）/
+    `sync`（fsync）/ `replay`（崩溃恢复）/ `truncate`（下刷后 GC）。日志为 **分段 segment**
+    文件（`{start_lsn:020}.wal`），每条记录带 **CRC32 帧**（`[len][crc][payload]`）。
+  - **组提交（leader/follower）降低 fsync：** `append` 只 `write(2)` 进页缓存并分配 LSN；
+    `sync` 时首个调用者成为 leader，快照写入位点、**释放锁后只做一次 fsync**，其余在此期间到达的
+    writer 全部被这次 fsync 覆盖（等待即返回）。不变式"非活动 segment 在 roll 时已整段 fsync"
+    保证 leader 只需 fsync 活动文件即可覆盖其快照 LSN。
+  - **崩溃恢复截断损坏尾部：** `open` 按 LSN 顺序校验每帧；首个 **头/载荷不完整或 CRC 不匹配**
+    的帧视为 **撕裂/损坏尾部**——截断该文件到最后一条好记录、删除其后所有 segment、停止扫描，
+    修复成一个可重放的干净前缀。这同时覆盖"写到一半崩溃（撕裂尾）"与"位翻转（坏 CRC）"。
+  - **重放物理 redo，天然幂等：** WAL 记录的是 **一次原子写批的物理 `Put`/`Delete` 镜像**
+    （而非 Redis 命令），重放同一批物理操作总是复现同一引擎状态——故崩溃中途/重叠 segment
+    导致的重复重放无害（非幂等命令如 `INCR`/`LPUSH` 若重放命令会翻倍，物理 redo 则安全）。
+  - **`WalEngine` 装饰器接入写路径：** 在 `GeneralEngine::write` 这一 **唯一写入咽喉** 包一层
+    （store 与命令层零改动）：`write` = append → sync（组提交）→ 应用到内层引擎；`open` 时先把
+    日志重放进内层引擎再供上层读取；日志超过 `checkpoint_bytes` 时 **checkpoint**（引擎 flush +
+    截断已下刷的日志前缀，对齐 §6"下刷通用引擎后 WAL 即可 GC"）。`get`/`scan`/`compact`/
+    `install_gc` 直通内层。
+  - **RocksDB 自带 WAL 关闭（`EngineConfig::disable_rocksdb_wal`）：** 本 WAL 为权威持久化层，
+    关掉 RocksDB WAL 避免每写双份日志；引擎侧持久化在 checkpoint 的 memtable flush 落 SST 后达成。
+    新增 `GeneralEngine::flush`（默认空实现；RocksDB flush memtable）作为 checkpoint 落点。
+  - **"每 Core 共享 WAL" 先以单 store 建模、接口留口：** 今天一个 DataNode = 一个逻辑 Core =
+    `Arc<Store<WalEngine<RocksEngine>>>`（store + WAL）。多 Replica 共享一个 WAL 的目标形态留作接口缝——
+    WAL 是 `Arc<dyn Wal>`（可共享）、每条 `WalRecord` 带保留的 `partition` 字段，后续加副本无需改格式。
+    DataNode Core 装配收敛到 `crates/gamestore-datanode/src/core.rs::open_core`（RocksDB 落
+    `data_dir/engine`、WAL 落 `data_dir/wal`）；`main` 在优雅关闭时 checkpoint。
+    `[wal] enabled=false` 时用 `NullWal`（无持久化，仅用于压测隔离 fsync 成本）保持同一代码路径。
+  - **WAL 指标（口径对齐 08 §1.2）：** `wal_fsync_latency_seconds`（histogram，每轮组提交一采样，
+    由 wal crate 就地打点）、`wal_gc_pending`（gauge，经 `WalEngine::stats` 导出的待 GC 日志字节），
+    接入既有 `/metrics` 端点并在 `describe_metrics` 登记。
+  - **按 MR-0020 约定重审"同步内联"决策（维持）：** fsync 进入前台写路径后，用基准数据复核并 **维持内联**
+    （见基准文档 §3）：读路径不受影响、外移只会给每条命令加移交；写路径瓶颈是 fsync 本身而非占用 worker，
+    降低 fsync 次数靠 **组提交**（已实现）而非 `spawn_blocking`。触发"专用每-Core 写线程/请求批处理"
+    的条件已记录（写并发超 worker 数、fsync 时延占主导、或需合并单连接 pipeline 内的多写——当前实现的已知边界）。
+  - **工具链坑（沿用先例）：** 新依赖 `crc32fast`（IEEE CRC32）为 edition-2018、仅依赖 cfg-if，
+    在钉死的 Rust 1.83 下无 edition2024 传递风险；放根 `[workspace.dependencies]`。本地 `cargo deny`
+    仍因 1.83 cargo 解析不了 registry 新 manifest 跑不了（**主分支即如此**，非本 MR 回归），以 CI 为准；
+    `crc32fast` 为 MIT/Apache-2.0，符合 deny.toml 白名单。
+- **影响范围：** 新增 `crates/gamestore-wal/`（`wal.rs`/`record.rs`/`file.rs`/`engine.rs`/`null.rs`/
+  `error.rs` + `tests/file_wal.rs`、`tests/wal_engine.rs` + `benches/wal_group_commit.rs`）并登记进根
+  `Cargo.toml` workspace members 与 `[workspace.dependencies]`（新增 `crc32fast`、`gamestore-wal`）；
+  `crates/gamestore-engine` 新增 `GeneralEngine::flush` 与 `EngineConfig::disable_rocksdb_wal`（RocksDB
+  `write_opt(disable_wal)`）；`crates/gamestore-datanode` 新增 `core.rs`（`open_core`/`CoreStore`）、
+  `main.rs` 接入 + 关闭时 checkpoint、`observability.rs` 描述 WAL 指标、`server.rs` 注释更新、
+  `tests/e2e_data.rs` 改用 WAL Core 并新增崩溃恢复用例；`gamestore-common` 配置新增 `[wal]` 段
+  （`WalSettings` + env 覆盖 + 单测）与 `config/datanode.example.toml`；新增
+  `docs/benchmarks/2026-07-02-i08-wal-writepath.md`（写路径新基线 + 组提交佐证 + 内联复核）；
+  更新 [`README.md`](../README.md) 当前状态。**不改动既有设计文档结论与 `spike/`。**
+- **退出标准（已达成）：**
+  - **崩溃后不丢已确认写：** e2e 测试 `wal_recovers_confirmed_writes_after_engine_loss`（写入 → 停服 →
+    删除 `data_dir/engine` 模拟引擎丢失 → 重启 `open_core` 仅凭 WAL 重放恢复全部写）；另手动 **真实
+    `kill -9`** 运行中服务后重启，日志 `replayed WAL into engine records=65`，String/Hash/ZSet/List
+    数据全部可读（RocksDB WAL 关闭，memtable 已随 kill -9 丢失，全靠本 WAL 重放）。
+  - **幂等重放：** `replay_is_idempotent`（同一日志重放两次得到同一状态；重放到已有数据的引擎不变）。
+  - **CRC 损坏 / 撕裂尾部恢复：** `crc_corruption_stops_recovery_at_the_bad_record`、
+    `torn_tail_is_truncated_on_recovery`（尾部被物理截断且可继续 append）。
+  - **组提交降低 fsync 有基准佐证：** 单测 `group_commit_coalesces_concurrent_fsyncs`（fsync 次数 < 并发写者数）；
+    criterion `wal_write_path`（64 条合并为 1 次 fsync，吞吐 ~30×）；e2e 复跑对照 I-07 基线并记录写路径新基线
+    （读不受影响；WAL 关 ≈ I-07 基线；顺序写 ~22.6k→~5.6k ops/s 的 fsync 代价；32 并发写者组提交回补到 ~13k）。
+  - **兼容性不回归：** 真实 redis-py 经 TCP 对 WAL-backed 服务：spike 32 项（RESP2）32/32、
+    `tests/redis_composite_test.py` 46 项 RESP2 46/46、RESP3 46/46 全过。
+  - `cargo fmt --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
+    `cargo test --workspace` / `cargo build --workspace` 全绿。
+- **后续方向：** Phase 2 依赖图下一步为 **I-09（副本 RPC 与集群装配，依赖 I-05；本 MR 定档 RPC 框架
+  `tonic`/`prost` vs `bincode`）** 与 **I-10（HLC 时间戳，依赖 I-08）**，两者可并行。I-08 已为其预留接口缝
+  （`Arc<dyn Wal>` 可共享、`WalRecord.partition`、`WalEngine` 装饰器不侵入命令层）。
+- **关联：** [`design/10-implementation-plan-rust.md`](design/10-implementation-plan-rust.md) I-08；
+  [`design/03-storage-engine.md`](design/03-storage-engine.md) §6/§8；
+  [`design/08-observability-ops.md`](design/08-observability-ops.md) §1.2；
+  [`benchmarks/2026-07-02-i08-wal-writepath.md`](benchmarks/2026-07-02-i08-wal-writepath.md)；
+  MR-0018（内联决策）/MR-0020（I-07 基线与复核约定）。
+
 <!-- 后续记录在此向下追加。请勿在已有记录上方插入。 -->
 
 ---
