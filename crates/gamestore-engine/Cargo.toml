@@ -9,3 +9,11 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+gamestore-common = { workspace = true }
+rocksdb = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }

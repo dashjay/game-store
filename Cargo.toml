@@ -39,6 +39,10 @@ metrics = "0.23"
 metrics-exporter-prometheus = { version = "0.15", default-features = false }
 # Byte buffers used across the protocol / engine boundaries.
 bytes = "1"
+# RocksDB binding (published as `rocksdb`, bundles RocksDB). Same binding family
+# TiKV uses; supports the Compaction Filter we rely on for version-based subkey
+# GC (plan §1). Introduced by the engine layer in I-03.
+rocksdb = "0.22"
 # tokio codec framing (Decoder/Encoder) for the protocol adapter layer (I-02).
 tokio-util = { version = "0.7", features = ["codec"] }
 # Property-based testing (round-trip / fuzz-style coverage), dev-only (plan §1).
@@ -47,6 +51,11 @@ tokio-util = { version = "0.7", features = ["codec"] }
 proptest = "=1.5.0"
 # Stream/Sink extension traits, used in dev tests for the tokio Framed adapter.
 futures = "0.3"
+# Temporary directories for engine tests (fresh RocksDB per test), dev-only.
+# Pinned to 3.14.0: newer tempfile pulls getrandom 0.4.x, which requires the
+# not-yet-stable `edition2024` and fails on our pinned Rust 1.83 toolchain
+# (same constraint recorded for proptest in MR-0015).
+tempfile = "=3.14.0"
 # Internal workspace crates.
 gamestore-common = { path = "crates/gamestore-common", version = "0.1.0" }
 gamestore-protocol = { path = "crates/gamestore-protocol", version = "0.1.0" }
