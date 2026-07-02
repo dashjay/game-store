@@ -107,6 +107,15 @@ pub trait GeneralEngine: Send + Sync {
     /// Install (or replace) the GC predicate consulted by the compaction filter.
     fn install_gc(&self, predicate: Arc<dyn GcPredicate>);
 
+    /// Durably persist everything written so far (a checkpoint point): after a
+    /// successful `flush`, applied data survives a crash without needing the
+    /// WAL, so the WAL prefix covering it can be GC'd
+    /// ([`docs/design/03-storage-engine.md`] §6). Backends that are always
+    /// durable can keep the default no-op.
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Point-in-time engine statistics as `(metric_name, value)` gauges,
     /// exported through the `/metrics` endpoint (I-07, aligned with
     /// [`docs/design/08-observability-ops.md`] §1.2's engine metrics).

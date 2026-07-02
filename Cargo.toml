@@ -5,13 +5,14 @@ members = [
     "crates/gamestore-protocol",
     "crates/gamestore-engine",
     "crates/gamestore-datamodel",
+    "crates/gamestore-wal",
     "crates/gamestore-datanode",
 ]
 
-# Crates that are part of the plan (§2.1) but not yet introduced in I-01.
+# Crates that are part of the plan (§2.1) but not yet introduced.
 # They are intentionally left out of `members` until their own MR lands so
 # the workspace stays buildable and CI stays meaningful.
-#   gamestore-wal / gamestore-replication / gamestore-meta / gamestore-proxy / gamestore-cli
+#   gamestore-replication / gamestore-meta / gamestore-proxy / gamestore-cli
 
 [workspace.package]
 version = "0.1.0"
@@ -39,6 +40,10 @@ metrics = "0.23"
 metrics-exporter-prometheus = { version = "0.15", default-features = false }
 # Byte buffers used across the protocol / engine boundaries.
 bytes = "1"
+# CRC32 (IEEE) for per-record WAL integrity checks (I-08). Stable, edition-2018
+# crate whose only dependency is cfg-if, so it is safe under the pinned Rust
+# 1.83 toolchain (no edition2024 transitive risk — see the pins below).
+crc32fast = "1"
 # RocksDB binding (published as `rocksdb`, bundles RocksDB). Same binding family
 # TiKV uses; supports the Compaction Filter we rely on for version-based subkey
 # GC (plan §1). Introduced by the engine layer in I-03.
@@ -69,6 +74,7 @@ gamestore-common = { path = "crates/gamestore-common", version = "0.1.0" }
 gamestore-protocol = { path = "crates/gamestore-protocol", version = "0.1.0" }
 gamestore-engine = { path = "crates/gamestore-engine", version = "0.1.0" }
 gamestore-datamodel = { path = "crates/gamestore-datamodel", version = "0.1.0" }
+gamestore-wal = { path = "crates/gamestore-wal", version = "0.1.0" }
 
 [profile.release]
 opt-level = 3

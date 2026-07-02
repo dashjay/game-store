@@ -1,0 +1,20 @@
+[package]
+name = "gamestore-wal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "GameStore per-Core write-ahead log: segmented file WAL with group-commit fsync, per-record CRC and crash recovery (I-08)."
+
+[dependencies]
+gamestore-common = { workspace = true }
+gamestore-engine = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+metrics = { workspace = true }
+crc32fast = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -164,6 +164,12 @@ impl GeneralEngine for RocksEngine {
         *self.gc.write().expect("gc slot poisoned") = Some(predicate);
     }
 
+    /// Flush memtables to SST files so applied data is durable on disk
+    /// independently of any WAL (used as a checkpoint before WAL truncation).
+    fn flush(&self) -> Result<()> {
+        self.db.flush().map_err(EngineError::from)
+    }
+
     /// RocksDB properties exported as gauges, chosen to cover the engine
     /// signals of [`docs/design/08-observability-ops.md`] §1.2: block-cache
     /// usage, write-stall state, memtable/compaction pressure and on-disk
